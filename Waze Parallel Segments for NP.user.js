@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Waze Parallel Segments for NP
-// @version      2024.05.30.01
+// @version      2024.07.01.01
 // @description  Facilitates the standardisation of segments for left-hand traffic
 // @author       kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -11,11 +11,11 @@
 /* 
 Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
 */
-// @downloadURL https://update.greasyfork.org/scripts/491466/Waze%20Parallel%20Segments%20for%20NP.user.js
-// @updateURL https://update.greasyfork.org/scripts/491466/Waze%20Parallel%20Segments%20for%20NP.meta.js
+// @downloadURL 
+// @updateURL 
 // ==/UserScript==
 /* Changelog
- updated name of script
+ Fixed compability issue with latest WME Update
 */
 
 (function() {
@@ -357,8 +357,10 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         divControls2.append(btn1);
         divGroup2.append(divControls2);
         cnt.append(divGroup2);*/
+		
+//creates form at edit panel side
 
-        $(cnt).insertAfter("#segment-edit-general .more-actions");
+        $(cnt).insertAfter("#segment-edit-general .attributes-form");
 
         $("#segmentsDistance").val(localStorage.getItem("metersSplitSegment"));
 
