@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Waze Parallel Segments for NP
-// @version      2024.07.01.01
+// @version      2024.07.01.02
 // @description  Facilitates the standardisation of segments for left-hand traffic
 // @author       kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
