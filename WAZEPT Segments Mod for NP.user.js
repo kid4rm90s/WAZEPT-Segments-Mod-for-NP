@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WAZEPT Segments Mod for NP
-// @version      2024.10.22.01
+// @version      2025.08.20.01
 // @description  Facilitates the standardisation of segments for left-hand traffic AKA right-hand-driving
 // @author       kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -15,7 +15,7 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
 // @updateURL 
 // ==/UserScript==
 /* Changelog
- Added segment distance
+ Patch for multiple segments unable to be connected together after the split
 */
 
 (function() {
@@ -445,7 +445,6 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         var AddNode= require("Waze/Action/AddNode");
         var UpdateObject= require("Waze/Action/UpdateObject");
         var ModifyAllConnections= require("Waze/Action/ModifyAllConnections");
-
         var distancia = $("#segmentsDistance").val();
         var no = null;
         var seg_left = [];
@@ -460,6 +459,26 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         sentido_base = null;
 
         let segmentosOrdenados = orderSegments();
+        let actionsToAdd = []; // Collect all actions first
+
+        // Create a custom action wrapper to delay getAffectedUniqueIds calls
+        function AddNodeWrapper(point, segments, options) {
+            var AddNode = require("Waze/Action/AddNode");
+            var baseAction = new AddNode(point, segments, options);
+            
+            // Override getAffectedUniqueIds to delay its execution
+            var originalGetAffectedUniqueIds = baseAction.getAffectedUniqueIds;
+            baseAction.getAffectedUniqueIds = function(dataModel) {
+                if (this.node) {
+                    return originalGetAffectedUniqueIds.call(this, dataModel);
+                } else {
+                    // Return empty array if node hasn't been created yet
+                    return [];
+                }
+            };
+            
+            return baseAction;
+        }
 
         $.each(segmentosOrdenados, function(i, idsegment) {
             var segment = W.model.segments.getObjectById(idsegment);
@@ -499,51 +518,57 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             {
                 if(no == "BA")
                 {
-                    action_left = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    W.model.actionManager.add(action_left);
+                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
+                    actionsToAdd.push(action_left);
 
-                    action_right = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    W.model.actionManager.add(action_right);
+                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
+                    actionsToAdd.push(action_right);
                 }
                 if(no == "BB")
                 {
-                    action_left = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    W.model.actionManager.add(action_left);
+                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
+                    actionsToAdd.push(action_left);
 
-                    action_right = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    W.model.actionManager.add(action_right);
+                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
+                    actionsToAdd.push(action_right);
                 }
                 if(no == "AB")
                 {
-                    action_left = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    W.model.actionManager.add(action_left);
+                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
+                    actionsToAdd.push(action_left);
 
-                    action_right = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    W.model.actionManager.add(action_right);
+                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
+                    actionsToAdd.push(action_right);
                 }
                 if(no == "AA")
                 {
-                    action_left = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    W.model.actionManager.add(action_left);
+                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
+                    actionsToAdd.push(action_left);
 
-                    action_right = new AddNode(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    W.model.actionManager.add(action_right);
+                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
+                    actionsToAdd.push(action_right);
                 }
             }
-            W.model.actionManager.add(new UpdateObject(W.model.segments.getObjectById(segments[0]),{fwdTurnsLocked:true,revTurnsLocked:true}))
-            W.model.actionManager.add(new UpdateObject(W.model.segments.getObjectById(segments[1]),{fwdTurnsLocked:true,revTurnsLocked:true}))
+            actionsToAdd.push(new UpdateObject(W.model.segments.getObjectById(segments[0]),{fwdTurnsLocked:true,revTurnsLocked:true}));
+            actionsToAdd.push(new UpdateObject(W.model.segments.getObjectById(segments[1]),{fwdTurnsLocked:true,revTurnsLocked:true}));
             seg_left.push(segments[0]);
             seg_right.push(segments[1]);
         });
 
+        // Add all actions
+        actionsToAdd.forEach(function(action) {
+            W.model.actionManager.add(action);
+        });
+
+        let additionalActions = []; // New array for remaining actions		
         $.each(seg_left, function(i, segmentos_left) {
             if(i < seg_left.length - 1)
             {
                 let segment = W.model.segments.getObjectById(segmentos_left)
                 if(sentido_base == "AB")
-                    W.model.actionManager.add(new ModifyAllConnections(segment.getToNode(),true))
+                    additionalActions.push(new ModifyAllConnections(segment.getToNode(),true));
                 if(sentido_base == "BA")
-                    W.model.actionManager.add(new ModifyAllConnections(segment.getFromNode(),true))
+                    additionalActions.push(new ModifyAllConnections(segment.getFromNode(),true));
             }
         });
         $.each(seg_right, function(i, segmentos_right) {
@@ -551,10 +576,15 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             {
                 let segment = W.model.segments.getObjectById(segmentos_right)
                 if(sentido_base == "AB")
-                    W.model.actionManager.add(new ModifyAllConnections(segment.getFromNode(),true))
+                    additionalActions.push(new ModifyAllConnections(segment.getFromNode(),true));
                 if(sentido_base == "BA")
-                    W.model.actionManager.add(new ModifyAllConnections(segment.getToNode(),true))
+                    additionalActions.push(new ModifyAllConnections(segment.getToNode(),true));
             }
+        });
+
+        // Add the remaining actions
+        additionalActions.forEach(function(action) {
+            W.model.actionManager.add(action);
         });
 
     }
@@ -796,6 +826,5 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             return "";
         return variable["v"];
     }
-
     bootstrap();
 })();
