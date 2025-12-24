@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WAZEPT Segments Mod for NP
-// @version      2025.08.20.01
+// @version      2025.12.25.01
 // @description  Facilitates the standardisation of segments for left-hand traffic AKA right-hand-driving
 // @author       kid4rm90s
 // @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -518,34 +518,38 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             {
                 if(no == "BA")
                 {
+                    // BA: left uses first point, right uses last point (reversed geometry)
                     action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
                     actionsToAdd.push(action_left);
 
-                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
+                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
                     actionsToAdd.push(action_right);
                 }
                 if(no == "BB")
                 {
+                    // BB: After swap, connect like BA
                     action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
+                    actionsToAdd.push(action_left);
+
+                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
+                    actionsToAdd.push(action_right);
+                }
+                if(no == "AB")
+                {
+                    // AB: left uses last point, right uses first point (reversed geometry)
+                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
                     actionsToAdd.push(action_left);
 
                     action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
                     actionsToAdd.push(action_right);
                 }
-                if(no == "AB")
-                {
-                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    actionsToAdd.push(action_left);
-
-                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    actionsToAdd.push(action_right);
-                }
                 if(no == "AA")
                 {
+                    // AA: After swap, connect like AB
                     action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
                     actionsToAdd.push(action_left);
 
-                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
+                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
                     actionsToAdd.push(action_right);
                 }
             }
@@ -560,24 +564,28 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             W.model.actionManager.add(action);
         });
 
-        let additionalActions = []; // New array for remaining actions		
+        let additionalActions = []; // New array for remaining actions	
+
+        // Modify connections for all left segments		
         $.each(seg_left, function(i, segmentos_left) {
-            if(i < seg_left.length - 1)
-            {
                 let segment = W.model.segments.getObjectById(segmentos_left)
-                if(sentido_base == "AB")
-                    additionalActions.push(new ModifyAllConnections(segment.getToNode(),true));
-                if(sentido_base == "BA")
+            if(segment) {
+                // Allow turns at both ends of each segment
+                if(segment.getFromNode() != null)
                     additionalActions.push(new ModifyAllConnections(segment.getFromNode(),true));
+                if(segment.getToNode() != null)
+                    additionalActions.push(new ModifyAllConnections(segment.getToNode(),true));
             }
         });
+        
+        // Modify connections for all right segments
         $.each(seg_right, function(i, segmentos_right) {
-            if(i > 0)
-            {
                 let segment = W.model.segments.getObjectById(segmentos_right)
-                if(sentido_base == "AB")
+            if(segment) {
+                // Allow turns at both ends of each segment
+                if(segment.getFromNode() != null)
                     additionalActions.push(new ModifyAllConnections(segment.getFromNode(),true));
-                if(sentido_base == "BA")
+                if(segment.getToNode() != null)
                     additionalActions.push(new ModifyAllConnections(segment.getToNode(),true));
             }
         });
@@ -620,14 +628,15 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             leftPa = pa.clone();
             leftPa.resize(scale, pb, 1);
             rightPa = leftPa.clone();
-            leftPa.rotate(90, pa);
-            rightPa.rotate(-90, pa);
+            // Swap rotations for left-handed drive (driving on the left)
+            leftPa.rotate(-90, pa);  // Was 90, now -90
+            rightPa.rotate(90, pa);  // Was -90, now 90
 
             leftPb = pb.clone();
             leftPb.resize(scale, pa, 1);
             rightPb = leftPb.clone();
-            leftPb.rotate(-90, pb);
-            rightPb.rotate(90, pb);
+            leftPb.rotate(90, pb);   // Was -90, now 90
+            rightPb.rotate(-90, pb); // Was 90, now -90
 
             var leftEq = getEquation({
                 'x1': leftPa.x,
@@ -687,10 +696,15 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
 
         leftPoints = leftPoints.reverse();
 
+        // Reverse right points so both segments flow in the same direction (A->B)
+        rightPoints = rightPoints.reverse();
+
+        // For left-handed drive with rotation swap, AA/BB need different handling
         if(no == "AA" || no == "BB")
         {
-            let aux = leftPoints.reverse();
-            leftPoints = rightPoints.reverse();
+            // Swap left and right (already reversed, so just swap without additional reversal)
+            let aux = leftPoints;
+            leftPoints = rightPoints;
             rightPoints = aux;
         }
 
@@ -698,41 +712,52 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         {
             if(no == "AB")
             {
+                // AB: segments flow in same direction
                 leftPoints.pop();
                 leftPoints.push(last_coord_left_first);
-                rightPoints.pop();
-                rightPoints.push(last_coord_right_first);
+                // Right segment is reversed, so we connect the beginning (first element after reversal) to previous end
+                rightPoints.shift();
+                rightPoints.unshift(last_coord_right_last);
             }
             if(no == "BA")
             {
+                // BA: segments flow in same direction but from opposite end
                 leftPoints.shift();
                 leftPoints.unshift(last_coord_left_last);
-                rightPoints.shift();
-                rightPoints.unshift(last_coord_right_last);
-            }
-            if(no == "AA")
-            {
-                leftPoints.pop();
-                leftPoints.push(last_coord_left_first);
+                // Right segment is reversed, so we connect the end (last element after reversal) to previous beginning
                 rightPoints.pop();
                 rightPoints.push(last_coord_right_first);
             }
-            if(no == "BB")
+            if(no == "AA")
             {
-                leftPoints.shift();
-                leftPoints.unshift(last_coord_left_last);
+                // AA: second segment connects at start nodes (flipped)
+                // After swap, left and right are swapped, so we need opposite connection
+                leftPoints.pop();
+                leftPoints.push(last_coord_left_first);
                 rightPoints.shift();
                 rightPoints.unshift(last_coord_right_last);
+            }
+            if(no == "BB")
+            {
+                // BB: second segment connects at end nodes (flipped)
+                // After swap, left and right are swapped, so we need opposite connection
+                leftPoints.shift();
+                leftPoints.unshift(last_coord_left_last);
+                rightPoints.pop();
+                rightPoints.push(last_coord_right_first);
             }
         }
 
         newSegEsq.components = leftPoints;
         newSegDir.components = rightPoints;
 
+        // Cache coordinates - right segment is reversed, so first/last are swapped
         last_coord_left_first = leftPoints[0];
-        last_coord_right_first = rightPoints[0];
         last_coord_left_last = leftPoints[leftPoints.length - 1];
-        last_coord_right_last = rightPoints[rightPoints.length - 1];
+        // For right segment: reversed geometry means first point is at index 0 (which is the "end"), 
+        // and last point is at length-1 (which is the "beginning")
+        last_coord_right_first = rightPoints[0];  // This is actually the end of the original right segment
+        last_coord_right_last = rightPoints[rightPoints.length - 1];  // This is actually the start
 
         var leftsegment = W.model.segments.getObjectById(segmentos[0]);
         var rightsegment = W.model.segments.getObjectById(segmentos[1]);
@@ -740,15 +765,18 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         W.model.actionManager.add(new UpdateSegmentGeometry(leftsegment,leftsegment.attributes.geoJSONGeometry,W.userscripts.toGeoJSONGeometry(newSegEsq)));
         W.model.actionManager.add(new UpdateSegmentGeometry(rightsegment,rightsegment.attributes.geoJSONGeometry,W.userscripts.toGeoJSONGeometry(newSegDir)));
 
+        // Both segments now flow in the same direction (A->B)
+        // Left segment: forward only (A->B)
+        // Right segment: forward only (A->B, geometry already reversed)
         if(no == "AA" || no == "BB")
         {
             W.model.actionManager.add(new UpdateObject(rightsegment, {'revDirection': false, 'fwdMaxSpeed': rightsegment.attributes.revMaxSpeed, 'revMaxSpeed': rightsegment.attributes.fwdMaxSpeed}));
-            W.model.actionManager.add(new UpdateObject(leftsegment, {'fwdDirection': false, 'fwdMaxSpeed': leftsegment.attributes.revMaxSpeed, 'revMaxSpeed': leftsegment.attributes.fwdMaxSpeed}));
+            W.model.actionManager.add(new UpdateObject(leftsegment, {'revDirection': false, 'fwdMaxSpeed': leftsegment.attributes.revMaxSpeed, 'revMaxSpeed': leftsegment.attributes.fwdMaxSpeed}));
         }
         else
         {
             W.model.actionManager.add(new UpdateObject(rightsegment, {'revDirection': false}));
-            W.model.actionManager.add(new UpdateObject(leftsegment, {'fwdDirection': false}));
+            W.model.actionManager.add(new UpdateObject(leftsegment, {'revDirection': false}));
         }
 
         return segmentos;
