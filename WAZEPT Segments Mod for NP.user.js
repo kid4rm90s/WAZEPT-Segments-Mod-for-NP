@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         WAZEPT Segments Mod for NP
-// @version      2025.12.27.01
+// @version      2025.12.28.01
 // @description  Facilitates the standardisation of segments for left-hand traffic AKA right-hand-driving
 // @author       kid4rm90s
 // @include 	 /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -22,7 +22,7 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
 
 (function () {
     'use strict';
-  const updateMessage = `<strong>Fixed :</strong><br> - Temporary fix for alerts not displaying properly.`;
+  const updateMessage = `<strong>Fixed :</strong><br> - Added segment distance options 12m, 40m, 42m, 45m.<br><br> <em>Happy Mapping!</em>`;
   const scriptName = GM_info.script.name;
   const scriptVersion = GM_info.script.version;
   const downloadUrl = GM_info.script.downloadURL;
@@ -285,6 +285,7 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         selSegmentsDistance.append($('<wz-option value="9">9 ' + strMeters + '</wz-option>'));
 		selSegmentsDistance.append($('<wz-option value="10">10 ' + strMeters + '</wz-option>'));
         selSegmentsDistance.append($('<wz-option value="11">11 ' + strMeters + '</wz-option>'));
+        selSegmentsDistance.append($('<wz-option value="12">12 ' + strMeters + '</wz-option>'));
         selSegmentsDistance.append($('<wz-option value="13">13 ' + strMeters + '</wz-option>'));
         selSegmentsDistance.append($('<wz-option value="14">14 ' + strMeters + '</wz-option>'));
         selSegmentsDistance.append($('<wz-option value="15">15 ' + strMeters + '</wz-option>'));
@@ -294,6 +295,9 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         selSegmentsDistance.append($('<wz-option value="23">23 ' + strMeters + '</wz-option>'));
         selSegmentsDistance.append($('<wz-option value="25">25 ' + strMeters + '</wz-option>'));
         selSegmentsDistance.append($('<wz-option value="37">37 ' + strMeters + '</wz-option>'));
+        selSegmentsDistance.append($('<wz-option value="40">40 ' + strMeters + '</wz-option>'));
+        selSegmentsDistance.append($('<wz-option value="42">42 ' + strMeters + '</wz-option>'));
+        selSegmentsDistance.append($('<wz-option value="45">45 ' + strMeters + '</wz-option>'));
 
         var cnt = $('<div id="split-segment" class="form-group" style="display: flex;" />');
 
