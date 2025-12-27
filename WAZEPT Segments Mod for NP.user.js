@@ -1,34 +1,44 @@
 // ==UserScript==
 // @name         WAZEPT Segments Mod for NP
-// @version      2025.12.25.01
+// @version      2025.12.27.01
 // @description  Facilitates the standardisation of segments for left-hand traffic AKA right-hand-driving
 // @author       kid4rm90s
-// @include 	   /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
-// @exclude        https://www.waze.com/user/*editor/*
-// @exclude        https://www.waze.com/*/user/*editor/*
-// @grant        none
+// @include 	 /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
+// @exclude      https://www.waze.com/user/*editor/*
+// @exclude      https://www.waze.com/*/user/*editor/*
+// @connect      greasyfork.org
+// @grant        GM_xmlhttpRequest
+// @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
 // @namespace https://greasyfork.org/users/1087400
 /* 
 Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
 */
-// @downloadURL 
-// @updateURL 
+// @downloadURL https://update.greasyfork.org/scripts/491466/WAZEPT%20Segments%20Mod%20for%20NP.user.js
+// @updateURL   https://update.greasyfork.org/scripts/491466/WAZEPT%20Segments%20Mod%20for%20NP.meta.js
 // ==/UserScript==
 /* Changelog
  Patch for multiple segments unable to be connected together after the split
 */
 
-(function() {
-    var version = GM_info.script.version;
+(function () {
+    'use strict';
+  const updateMessage = `<strong>Fixed :</strong><br> - Temporary fix for alerts not displaying properly.`;
+  const scriptName = GM_info.script.name;
+  const scriptVersion = GM_info.script.version;
+  const downloadUrl = GM_info.script.downloadURL;
+  const forumURL = 'https://greasyfork.org/en/scripts/491466-wazept-segments-mod-for-np/feedback';
+
     var roads_id = [3,4,6,7,2,1,22,8,20,17,15,18,19];
     var pedonal_id = [5,10,16];
-    var array_config_country = {};
-    var array_language_original = {};
-    var array_language_country = {};
-    var language = {};
-    var indexselected = "";
-    var valueselected = "";
-    var array_roads = {};
+    // var array_config_country = {};
+    var language = {
+        btnSplit: "Split the segments",
+        strMeters: "m",
+        strDistance: "Distance between the two parallel segments:",
+        strSelMoreSeg: "Since you have more than 1 segment selected, to use this function make sure that you have selected segments sequentially (from one end to the other) and after executing the script, VERIFY the result obtained."
+    };
+    // var indexselected = "";
+    // var array_roads = {};
     var last_node_A = null;
     var last_node_B = null;
     var last_coord_left_first = null;
@@ -45,10 +55,7 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         }
     }
 
-    async function init() {
-        var result = await getLanguages();
-
-
+    function init() {
         setTimeout(() => {
             W.selectionManager.events.register('selectionchanged', null, selectedFeature);
             selectedFeature();
@@ -70,7 +77,7 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         }, 100)
     }
 
-
+/*
     function getConfigsCountry(link) {
         let timeout = 0;
         return new Promise(resolve => {
@@ -102,63 +109,8 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             }
         });
     }
+*/
 
-    function getLanguages() {
-        let timeout = 0;
-        return new Promise(resolve => {
-
-														  
-            fetch('https://docs.google.com/spreadsheets/d/1cfvkiDDK5mL1CSzAaXWC8oWyqr3us0CQhqIPegq7Q3g/gviz/tq?tqx=out:json')
-                .then(res => res.text())
-                .then(text => {
-                const json = JSON.parse(text.substr(47).slice(0, -2))
-
-                let first = false;
-                $(json.table.rows).each(function(){
-                    if(first == false)
-                    {
-                        first = true;
-                        return;
-                    }
-
-                    if(verifyNull(this["c"][0]) == "Original String")
-                    {
-                        array_language_original["btnSplit"] = verifyNull(this["c"][1]);
-                        array_language_original["strMeters"] = verifyNull(this["c"][2]);
-                        array_language_original["strDistance"] = verifyNull(this["c"][3]);
-                        array_language_original["strSelMoreSeg"] = verifyNull(this["c"][4]);
-                    }
-                    if(verifyNull(this["c"][0]).toLowerCase() == JSON.parse(localStorage.getItem("editorLocation"))["locale"].toLowerCase())
-                    {
-                        array_language_country["btnSplit"] = verifyNull(this["c"][1]);
-                        array_language_country["strMeters"] = verifyNull(this["c"][2]);
-                        array_language_country["strDistance"] = verifyNull(this["c"][3]);
-                        array_language_country["strSelMoreSeg"] = verifyNull(this["c"][4]);
-                    }
-                });
-
-            })
-
-            var timer = setInterval(check_data, 100);
-
-            function check_data() {
-                if(Object.keys(array_language_original).length > 0 || timeout >= 20)
-                {
-                    if(Object.keys(array_language_country).length == 0)
-                        language = array_language_original;
-                    $.each(array_language_country, function(code, string) {
-                        if(string == "")
-                            language[code] = array_language_original[code];
-                        else
-                            language[code] = array_language_country[code];
-                    });
-                    clearInterval(timer);
-                    resolve('true');
-                }
-                timeout = timeout + 1;
-            }
-        });
-    }
 
     function myTimer() {
 
@@ -226,72 +178,72 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             }
     }
 
-    function defineSpeed (segment, speed) {
-        let UpdateObject= require("Waze/Action/UpdateObject");
-        if(segment.attributes.fwdMaxSpeed == null && segment.attributes.fwdMaxSpeed == null)
-            W.model.actionManager.add(new UpdateObject(segment, {'fwdMaxSpeed': speed, 'revMaxSpeed': speed}));
-        else if(segment.attributes.fwdMaxSpeed == null)
-            W.model.actionManager.add(new UpdateObject(segment, {'fwdMaxSpeed': speed}));
-        else if(segment.attributes.fwdMaxSpeed == null)
-            W.model.actionManager.add(new UpdateObject(segment, {'revMaxSpeed': speed}));
-    }
+    // function defineSpeed (segment, speed) {
+    //     let UpdateObject= require("Waze/Action/UpdateObject");
+    //     if(segment.attributes.fwdMaxSpeed == null && segment.attributes.fwdMaxSpeed == null)
+    //         W.model.actionManager.add(new UpdateObject(segment, {'fwdMaxSpeed': speed, 'revMaxSpeed': speed}));
+    //     else if(segment.attributes.fwdMaxSpeed == null)
+    //         W.model.actionManager.add(new UpdateObject(segment, {'fwdMaxSpeed': speed}));
+    //     else if(segment.attributes.fwdMaxSpeed == null)
+    //         W.model.actionManager.add(new UpdateObject(segment, {'revMaxSpeed': speed}));
+    // }
 
-    function defineRoadType (segment, type) {
-        let UpdateObject= require("Waze/Action/UpdateObject");
-        W.model.actionManager.add(new UpdateObject(segment, {'roadType': type}));
-    }
+    // function defineRoadType (segment, type) {
+    //     let UpdateObject= require("Waze/Action/UpdateObject");
+    //     W.model.actionManager.add(new UpdateObject(segment, {'roadType': type}));
+    // }
 
-    function defineLockRankRoad (segment, rank) {
-        let UpdateObject= require("Waze/Action/UpdateObject");
-        rank--;
-        var bloquear;
-        if(W.loginManager.user.rank >= rank)
-            bloquear = rank;
-        else
-            bloquear = W.loginManager.user.rank;
-        let lock = segment.attributes.lockRank;
-        if(lock < bloquear)
-            W.model.actionManager.add(new UpdateObject(segment, {'lockRank': bloquear}));
-    }
+    // function defineLockRankRoad (segment, rank) {
+    //     let UpdateObject= require("Waze/Action/UpdateObject");
+    //     rank--;
+    //     var bloquear;
+    //     if(W.loginManager.user.rank >= rank)
+    //         bloquear = rank;
+    //     else
+    //         bloquear = W.loginManager.user.rank;
+    //     let lock = segment.attributes.lockRank;
+    //     if(lock < bloquear)
+    //         W.model.actionManager.add(new UpdateObject(segment, {'lockRank': bloquear}));
+    // }
 
 
-    function convertSegmentType(segment) {
-        let AddSegment = require("Waze/Action/AddSegment");
-        let FeatureVectorSegment = require("Waze/Feature/Vector/Segment");
-        let DeleteSegment = require("Waze/Action/DeleteSegment");
-        let ModifyAllConnections = require("Waze/Action/ModifyAllConnections");
-        let UpdateObject = require("Waze/Action/UpdateObject");
-        let ConnectSegment = require("Waze/Action/ConnectSegment");
+    // function convertSegmentType(segment) {
+    //     let AddSegment = require("Waze/Action/AddSegment");
+    //     let FeatureVectorSegment = require("Waze/Feature/Vector/Segment");
+    //     let DeleteSegment = require("Waze/Action/DeleteSegment");
+    //     let ModifyAllConnections = require("Waze/Action/ModifyAllConnections");
+    //     let UpdateObject = require("Waze/Action/UpdateObject");
+    //     let ConnectSegment = require("Waze/Action/ConnectSegment");
 
-        var newseg1=new FeatureVectorSegment({geoJSONGeometry:W.userscripts.toGeoJSONGeometry(segment.attributes.geometry)});
+    //     var newseg1=new FeatureVectorSegment({geoJSONGeometry:W.userscripts.toGeoJSONGeometry(segment.attributes.geometry)});
 
-        newseg1.copyAttributes(segment);
+    //     newseg1.copyAttributes(segment);
 
-        newseg1.attributes.roadType=parseInt(array_config_country[indexselected][2]);
-        newseg1.attributes.lockRank=null;
-        newseg1.setID(null);
+    //     newseg1.attributes.roadType=parseInt(array_config_country[indexselected][2]);
+    //     newseg1.attributes.lockRank=null;
+    //     newseg1.setID(null);
 
-        W.model.actionManager.add(new DeleteSegment(segment));
+    //     W.model.actionManager.add(new DeleteSegment(segment));
 
-        let action = new AddSegment(newseg1);
-        W.model.actionManager.add(action);
+    //     let action = new AddSegment(newseg1);
+    //     W.model.actionManager.add(action);
 
-        let seg = W.model.segments.getObjectById(action.segment.attributes.id);
-        if(roads_id.includes(seg.attributes.roadType))
-        {
-            W.model.actionManager.add(new UpdateObject(seg,{fwdTurnsLocked:true,revTurnsLocked:true}))
-            if(seg.getFromNode() != null)
-                W.model.actionManager.add(new ConnectSegment(seg.getFromNode(),newseg1));
-            if(seg.getToNode() != null)
-                W.model.actionManager.add(new ConnectSegment(seg.getToNode(),newseg1));
-            if(seg.getFromNode() != null)
-                W.model.actionManager.add(new ModifyAllConnections(seg.getFromNode(),true));
-            if(seg.getToNode() != null)
-                W.model.actionManager.add(new ModifyAllConnections(seg.getToNode(),true));
-        }
+    //     let seg = W.model.segments.getObjectById(action.segment.attributes.id);
+    //     if(roads_id.includes(seg.attributes.roadType))
+    //     {
+    //         W.model.actionManager.add(new UpdateObject(seg,{fwdTurnsLocked:true,revTurnsLocked:true}))
+    //         if(seg.getFromNode() != null)
+    //             W.model.actionManager.add(new ConnectSegment(seg.getFromNode(),newseg1));
+    //         if(seg.getToNode() != null)
+    //             W.model.actionManager.add(new ConnectSegment(seg.getToNode(),newseg1));
+    //         if(seg.getFromNode() != null)
+    //             W.model.actionManager.add(new ModifyAllConnections(seg.getFromNode(),true));
+    //         if(seg.getToNode() != null)
+    //             W.model.actionManager.add(new ModifyAllConnections(seg.getToNode(),true));
+    //     }
 
-        return seg;
-    }
+    //     return seg;
+    // }
 
     // Split Segments
 
@@ -438,10 +390,22 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
 
     function mainSplitSegments() {
 
-        if (W.selectionManager.getSelectedFeatures().length > 1)
-            if(!confirm(language.strSelMoreSeg))
-                return;
+        if (W.selectionManager.getSelectedFeatures().length > 1) {
+            WazeToastr.Alerts.confirm(
+                scriptName,
+                language.strSelMoreSeg,
+                function() { executeSplit(); },
+                function() { return; },
+                "Continue",
+                "Cancel"
+            );
+            return;
+        }
 
+        executeSplit();
+    }
+
+    function executeSplit() {
         var AddNode= require("Waze/Action/AddNode");
         var UpdateObject= require("Waze/Action/UpdateObject");
         var ModifyAllConnections= require("Waze/Action/ModifyAllConnections");
@@ -595,6 +559,8 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
             W.model.actionManager.add(action);
         });
 
+        // Show success message
+        WazeToastr.Alerts.success(scriptName, `Successfully split ${seg_left.length} segment${seg_left.length > 1 ? 's' : ''} with ${distancia}m gap!`);
     }
 
     function createSegments(sel, displacement, no) {
@@ -848,11 +814,26 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
     }
 
     
-    function verifyNull(variable)
-    {
-        if(variable === null)
-            return "";
-        return variable["v"];
+    // function verifyNull(variable)
+    // {
+    //     if(variable === null)
+    //         return "";
+    //     return variable["v"];
+    // }
+
+    function scriptupdatemonitor() {
+      if (WazeToastr?.Ready) {
+        // Create and start the ScriptUpdateMonitor
+        const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
+        updateMonitor.start(2, true); // Check every 2 hours, check immediately
+
+        // Show the update dialog for the current version
+        WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
+      } else {
+        setTimeout(scriptupdatemonitor, 250);
+      }
     }
+    scriptupdatemonitor();
+    
     bootstrap();
 })();
