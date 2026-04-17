@@ -1,422 +1,377 @@
 // ==UserScript==
-// @name         WAZEPT Segments Mod for NP
-// @version      2025.12.28.01
-// @description  Facilitates the standardisation of segments for left-hand traffic AKA right-hand-driving
-// @author       kid4rm90s
+// @name         Waze Parallel Segments
+// @version      2026.04.17.01
+// @description  Splits two-way segments into parallel one-way carriageways. Supports both left-hand and right-hand traffic countries.
+// @author       kid4rm90s & copilot (original author J0N4S13)
 // @include 	 /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
 // @exclude      https://www.waze.com/user/*editor/*
 // @exclude      https://www.waze.com/*/user/*editor/*
 // @connect      greasyfork.org
 // @grant        GM_xmlhttpRequest
-// @require      https://greasyfork.org/scripts/560385/code/WazeToastr.js
-// @namespace https://greasyfork.org/users/1087400
+// @grant        GM_setClipboard
+// @grant        unsafeWindow
+// @require       https://kid4rm90s.github.io/WazeToastr/WazeToastr.js
+// @require      https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js
+// @namespace    https://greasyfork.org/users/1087400
 /* 
 Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
+Migrated to WME SDK by kid4rm90s
 */
-// @downloadURL https://update.greasyfork.org/scripts/491466/WAZEPT%20Segments%20Mod%20for%20NP.user.js
-// @updateURL   https://update.greasyfork.org/scripts/491466/WAZEPT%20Segments%20Mod%20for%20NP.meta.js
+// @downloadURL https://update.greasyfork.org/scripts/491466/WAZEParallel%20Segments%20Mod%20for%20NP.user.js
+// @updateURL   https://update.greasyfork.org/scripts/491466/WAZEParallel%20Segments%20Mod%20for%20NP.meta.js
 // ==/UserScript==
-/* Changelog
- Patch for multiple segments unable to be connected together after the split
-*/
 
 (function () {
     'use strict';
-  const updateMessage = `<strong>Fixed :</strong><br> - Added segment distance options 12m, 40m, 42m, 45m.<br><br> <em>Happy Mapping!</em>`;
-  const scriptName = GM_info.script.name;
-  const scriptVersion = GM_info.script.version;
-  const downloadUrl = GM_info.script.downloadURL;
-  const forumURL = 'https://greasyfork.org/en/scripts/491466-wazept-segments-mod-for-np/feedback';
 
-    var roads_id = [3,4,6,7,2,1,22,8,20,17,15,18,19];
-    var pedonal_id = [5,10,16];
-    // var array_config_country = {};
-    var language = {
+    // ─── Script metadata ────────────────────────────────────────────────────────
+    const updateMessage = `This script has been migrated to the <strong>WME SDK</strong>.<br>` +
+        `Both left-hand and right-hand traffic countries are now supported.<br><br>` +
+        `<em>Happy Mapping!</em>`;
+    const scriptName = GM_info.script.name;
+    const scriptVersion = GM_info.script.version;
+    const downloadUrl = GM_info.script.downloadURL;
+    const forumURL = 'https://greasyfork.org/en/scripts/491466-WAZEParallel-segments-mod-for-np/feedback';
+
+    // ─── Road type IDs ──────────────────────────────────────────────────────────
+    // Road types that are drivable (used in deactivated road-conversion code kept for reference)
+    const drivableRoadIds = [3, 4, 6, 7, 2, 1, 22, 8, 20, 17, 15, 18, 19];
+    // Road types considered pedestrian (excluded from split)
+    const pedestrianRoadIds = [5, 10, 16];
+
+    const language = {
         btnSplit: "Split the segments",
         strMeters: "m",
         strDistance: "Distance between the two parallel segments:",
         strSelMoreSeg: "Since you have more than 1 segment selected, to use this function make sure that you have selected segments sequentially (from one end to the other) and after executing the script, VERIFY the result obtained."
     };
-    // var indexselected = "";
-    // var array_roads = {};
-    var last_node_A = null;
-    var last_node_B = null;
-    var last_coord_left_first = null;
-    var last_coord_left_last = null;
-    var last_coord_right_first = null;
-    var last_coord_right_last = null;
-    var sentido_base = null;
 
-    function bootstrap() {
-        if (typeof W === 'object' && W.userscripts?.state.isReady) {
-            init();
-        } else {
-            document.addEventListener('wme-ready', init, { once: true });
+    // ─── State tracking across multi-segment splits ──────────────────────────
+    let last_node_A = null;
+    let last_node_B = null;
+    let last_coord_left_first = null;
+    let last_coord_left_last = null;
+    let last_coord_right_first = null;
+    let last_coord_right_last = null;
+    let baseDirection = null;
+
+    // ─── SDK instance ────────────────────────────────────────────────────────
+    let sdk = null;
+
+    // ─── Traffic side ────────────────────────────────────────────────────────
+    // Re-detected on every split so switching between LHT/RHT countries in the
+    // same session always uses the correct setting. Defaults to true (LHT) as a
+    // safe fallback if the country cannot be resolved yet.
+    let isLeftHandTraffic = true;
+
+    // Detects LHT/RHT for the current edit context.
+    // Primary:  segment → primaryStreetId → cityId → countryId → isLeftHandTraffic.
+    //           Tied to the segment's own data — reliable in cross-border areas.
+    // Fallback: sdk.DataModel.Countries.getTopCountry() — viewport-based, used at
+    //           init before any segment is available, or if the chain is incomplete.
+    function detectTrafficSide(segmentId) {
+        // Primary: walk segment → street → city → country.
+        if (segmentId != null) {
+            try {
+                const seg = sdk.DataModel.Segments.getById({ segmentId });
+                if (seg?.primaryStreetId) {
+                    const street = sdk.DataModel.Streets.getById({ streetId: seg.primaryStreetId });
+                    if (street?.cityId) {
+                        const city = sdk.DataModel.Cities.getById({ cityId: street.cityId });
+                        if (city?.countryId) {
+                            const country = sdk.DataModel.Countries.getById({ countryId: city.countryId });
+                            if (country != null) {
+                                isLeftHandTraffic = country.isLeftHandTraffic ?? true;
+                                console.debug('[WAZEParallel] Traffic side:', isLeftHandTraffic ? 'LHT' : 'RHT', '— country (from segment chain):', country.name);
+                                return;
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn('[WAZEParallel] Segment-chain country detection failed:', e);
+            }
         }
+        // Fallback: top country for the current map view.
+        try {
+            const topCountry = sdk.DataModel.Countries.getTopCountry();
+            if (topCountry != null) {
+                isLeftHandTraffic = topCountry.isLeftHandTraffic ?? true;
+                console.debug('[WAZEParallel] Traffic side:', isLeftHandTraffic ? 'LHT' : 'RHT', '— country (from getTopCountry):', topCountry.name);
+                return;
+            }
+        } catch (e) {
+            console.warn('[WAZEParallel] getTopCountry() failed:', e);
+        }
+        console.warn('[WAZEParallel] Could not detect traffic side — keeping', isLeftHandTraffic ? 'LHT' : 'RHT');
+    }
+
+    // ─── Bootstrap ───────────────────────────────────────────────────────────
+    function bootstrap() {
+        // SDK pattern: use unsafeWindow because @grant directives are present
+        unsafeWindow.SDK_INITIALIZED.then(initSdk);
+    }
+
+    function initSdk() {
+        sdk = unsafeWindow.getWmeSdk({ scriptId: 'WAZEParallel-segments-mod-np', scriptName: scriptName });
+        sdk.Events.once({ eventName: 'wme-ready' }).then(init);
     }
 
     function init() {
-        setTimeout(() => {
-            W.selectionManager.events.register('selectionchanged', null, selectedFeature);
-            selectedFeature();
-        }, 250);
-
+        // Best-effort early detection — no segment yet, falls back to getTopCountry().
+        detectTrafficSide(null);
+        // Register for selection change events (SDK equivalent of selectionManager.events.register)
+        sdk.Events.on({ eventName: 'wme-selection-changed', eventHandler: onSelectionChanged });
+        // Run once on startup in case something is already selected
+        onSelectionChanged();
     }
 
-    function selectedFeature(){
-        var typeData = null;
+    // ─── Selection handler ───────────────────────────────────────────────────
+    function onSelectionChanged() {
         setTimeout(() => {
-            if(typeof W.selectionManager.getSelectedFeatures()[0] != 'undefined')
-                typeData = W.selectionManager.getSelectedFeatures()[0]._wmeObject.type;
-            if (typeData == "segment")
-            {
+            const selection = sdk.Editing.getSelection();
+            if (selection && selection.objectType === 'segment') {
                 myTimer();
-                if(W.loginManager.getUserRank() >= 3)
-                    insertButtons();
+                insertButtons();
             }
-        }, 100)
+        }, 300);
     }
 
-/*
-    function getConfigsCountry(link) {
-        let timeout = 0;
-        return new Promise(resolve => {
-
-            fetch(link)
-                .then(res => res.text())
-                .then(text => {
-                const json = JSON.parse(text.substr(47).slice(0, -2))
-
-                $(json.table.rows).each(function(){
-                    if(verifyNull(this["c"][0]) == true)
-                    {
-                        var elem = [verifyNull(this["c"][4]), verifyNull(this["c"][5]), verifyNull(this["c"][6]), verifyNull(this["c"][7]), verifyNull(this["c"][8])];
-                        array_config_country[verifyNull(this["c"][1])] = elem;
-                        array_roads[verifyNull(this["c"][1])] = [verifyNull(this["c"][2]), verifyNull(this["c"][3])];
-                    }
-                });
-            })
-
-            var timer = setInterval(check_data, 100);
-
-            function check_data() {
-                if(Object.keys(array_config_country).length > 0 || timeout >= 20)
-                {
-                    clearInterval(timer);
-                    resolve('true');
-                }
-                timeout = timeout + 1;
-            }
-        });
-    }
-*/
-
-
+    // ─── myTimer: inject A→B / B→A direction copy buttons ───────────────────
     function myTimer() {
+        if (document.getElementById('signsroad')) return;
 
-        var n_bloqueio;
-        var nivel;
-        var lvl_atual;
-        var lvl_max;
+        const signsroad = document.createElement('div');
+        signsroad.id = 'signsroad';
 
-            if (!$("#signsroad").length) {
-                var signsroad = document.createElement("div");
-                signsroad.id = 'signsroad';
+        const btnAB = document.createElement('button');
+        btnAB.innerHTML = 'A->B';
+        btnAB.id = 'btnAB';
+        btnAB.style.cssText = 'height: 20px;font-size:11px';
+        btnAB.onclick = function () {
+            const selection = sdk.Editing.getSelection();
+            if (!selection || selection.objectType !== 'segment') return;
+            const segId = selection.ids[0];
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg || !seg.isAtoB) return;  // isAtoB = fwdDirection only
+            const center = sdk.Map.getMapCenter();
+            const text = center.lon.toFixed(6) + ',' + center.lat.toFixed(6) +
+                '|' + segId + '|TRUE|' + seg.fromNodeId + '|' + seg.toNodeId;
+            GM_setClipboard(text);
+        };
 
-                
-                var btnAB = document.createElement("button");
-                btnAB.innerHTML = 'A->B';
-                btnAB.id = 'btnAB';
-                btnAB.style.cssText = 'height: 20px;font-size:11px';
+        const btnBA = document.createElement('button');
+        btnBA.innerHTML = 'B->A';
+        btnBA.id = 'btnBA';
+        btnBA.style.cssText = 'height: 20px;font-size:11px';
+        btnBA.onclick = function () {
+            const selection = sdk.Editing.getSelection();
+            if (!selection || selection.objectType !== 'segment') return;
+            const segId = selection.ids[0];
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg || !seg.isBtoA) return;  // isBtoA = revDirection only
+            const center = sdk.Map.getMapCenter();
+            const text = center.lon.toFixed(6) + ',' + center.lat.toFixed(6) +
+                '|' + segId + '|FALSE|' + seg.toNodeId + '|' + seg.fromNodeId;
+            GM_setClipboard(text);
+        };
 
-                btnAB.onclick = function() {
-                    let myRoad = W.selectionManager.getSelectedFeatures()[0]._wmeObject.attributes;
-                    if(myRoad.fwdDirection == true) //A to B
-                    {
-                        let center = new OpenLayers.LonLat(W.map.getCenter().lon, W.map.getCenter().lat)
-                        .transform(new OpenLayers.Projection("EPSG:900913"), new OpenLayers.Projection("EPSG:4326"));
-                        var $temp = $("<input>");
-                        $("body").append($temp);
-                        $temp.val(center.lon.toString().slice(0,8) + "," + center.lat.toString().slice(0,8) + "|" + W.selectionManager.getSelectedFeatures()[0]["attributes"]["wazeFeature"]["_wmeObject"]["attributes"]["attributes"]["id"] + "|" + "TRUE" + "|" + getPermalink() + "|" + myRoad.fromNodeID + "|" + myRoad.toNodeID).select();
-                        document.execCommand("copy");
-                        $temp.remove();
-                    }
-                }
+        const divDirectionBtns = document.createElement('div');
+        divDirectionBtns.id = 'divDirectionBtns';
+        divDirectionBtns.appendChild(btnAB);
+        divDirectionBtns.appendChild(btnBA);
 
-                var btnBA = document.createElement("button");
-                btnBA.innerHTML = 'B->A';
-                btnBA.id = 'btnBA';
-                btnBA.style.cssText = 'height: 20px;font-size:11px';
+        const divLandmarkScript = document.createElement('div');
+        divLandmarkScript.id = 'divLandmarkScript';
+        divLandmarkScript.style.cssText = 'float:left;';
+        divLandmarkScript.appendChild(signsroad);
+        divLandmarkScript.appendChild(divDirectionBtns);
 
-                btnBA.onclick =  function() {
-                    let myRoad = W.selectionManager.getSelectedFeatures()[0]._wmeObject.attributes;
-                    if(myRoad.revDirection == true) //B to A
-                    {
-                        let center = new OpenLayers.LonLat(W.map.getCenter().lon, W.map.getCenter().lat)
-                        .transform(new OpenLayers.Projection("EPSG:900913"), new OpenLayers.Projection("EPSG:4326"));
-                        var $temp = $("<input>");
-                        $("body").append($temp);
-                        $temp.val(center.lon.toString().slice(0,8) + "," + center.lat.toString().slice(0,8) + "|" + W.selectionManager.getSelectedFeatures()[0]["attributes"]["wazeFeature"]["_wmeObject"]["attributes"]["id"] + "|" + "FALSE" + "|" + getPermalink() + "|" + myRoad.toNodeID + "|" + myRoad.fromNodeID).select();
-                        document.execCommand("copy");
-                        $temp.remove();
-                    }
-                }
-
-                var divSentidos = document.createElement("div");
-                divSentidos.id = 'divSentidos';
-                divSentidos.appendChild(btnAB);
-                divSentidos.appendChild(btnBA);
-
-                var divLandmarkScript = document.createElement("div");
-                divLandmarkScript.id = 'divLandmarkScript';
-                divLandmarkScript.style.cssText = 'float:left;';
-                divLandmarkScript.appendChild(signsroad);
-                divLandmarkScript.appendChild(divSentidos);
-
-                $("div #segment-edit-general").prepend(divLandmarkScript);
-                $( "#divSentidos" ).hide();
-            }
+        const editGeneral = document.querySelector('div #segment-edit-general');
+        if (editGeneral) {
+            editGeneral.prepend(divLandmarkScript);
+            divDirectionBtns.style.display = 'none';
+        }
     }
 
-    // function defineSpeed (segment, speed) {
-    //     let UpdateObject= require("Waze/Action/UpdateObject");
-    //     if(segment.attributes.fwdMaxSpeed == null && segment.attributes.fwdMaxSpeed == null)
-    //         W.model.actionManager.add(new UpdateObject(segment, {'fwdMaxSpeed': speed, 'revMaxSpeed': speed}));
-    //     else if(segment.attributes.fwdMaxSpeed == null)
-    //         W.model.actionManager.add(new UpdateObject(segment, {'fwdMaxSpeed': speed}));
-    //     else if(segment.attributes.fwdMaxSpeed == null)
-    //         W.model.actionManager.add(new UpdateObject(segment, {'revMaxSpeed': speed}));
-    // }
-
-    // function defineRoadType (segment, type) {
-    //     let UpdateObject= require("Waze/Action/UpdateObject");
-    //     W.model.actionManager.add(new UpdateObject(segment, {'roadType': type}));
-    // }
-
-    // function defineLockRankRoad (segment, rank) {
-    //     let UpdateObject= require("Waze/Action/UpdateObject");
-    //     rank--;
-    //     var bloquear;
-    //     if(W.loginManager.user.rank >= rank)
-    //         bloquear = rank;
-    //     else
-    //         bloquear = W.loginManager.user.rank;
-    //     let lock = segment.attributes.lockRank;
-    //     if(lock < bloquear)
-    //         W.model.actionManager.add(new UpdateObject(segment, {'lockRank': bloquear}));
-    // }
-
-
-    // function convertSegmentType(segment) {
-    //     let AddSegment = require("Waze/Action/AddSegment");
-    //     let FeatureVectorSegment = require("Waze/Feature/Vector/Segment");
-    //     let DeleteSegment = require("Waze/Action/DeleteSegment");
-    //     let ModifyAllConnections = require("Waze/Action/ModifyAllConnections");
-    //     let UpdateObject = require("Waze/Action/UpdateObject");
-    //     let ConnectSegment = require("Waze/Action/ConnectSegment");
-
-    //     var newseg1=new FeatureVectorSegment({geoJSONGeometry:W.userscripts.toGeoJSONGeometry(segment.attributes.geometry)});
-
-    //     newseg1.copyAttributes(segment);
-
-    //     newseg1.attributes.roadType=parseInt(array_config_country[indexselected][2]);
-    //     newseg1.attributes.lockRank=null;
-    //     newseg1.setID(null);
-
-    //     W.model.actionManager.add(new DeleteSegment(segment));
-
-    //     let action = new AddSegment(newseg1);
-    //     W.model.actionManager.add(action);
-
-    //     let seg = W.model.segments.getObjectById(action.segment.attributes.id);
-    //     if(roads_id.includes(seg.attributes.roadType))
-    //     {
-    //         W.model.actionManager.add(new UpdateObject(seg,{fwdTurnsLocked:true,revTurnsLocked:true}))
-    //         if(seg.getFromNode() != null)
-    //             W.model.actionManager.add(new ConnectSegment(seg.getFromNode(),newseg1));
-    //         if(seg.getToNode() != null)
-    //             W.model.actionManager.add(new ConnectSegment(seg.getToNode(),newseg1));
-    //         if(seg.getFromNode() != null)
-    //             W.model.actionManager.add(new ModifyAllConnections(seg.getFromNode(),true));
-    //         if(seg.getToNode() != null)
-    //             W.model.actionManager.add(new ModifyAllConnections(seg.getToNode(),true));
-    //     }
-
-    //     return seg;
-    // }
-
-    // Split Segments
-
+    // ─── insertButtons: inject split segment UI ───────────────────────────────
     function insertButtons() {
 
-        if (typeof W.loginManager != 'undefined' && !W.loginManager.isLoggedIn()) {
-            return;
-        }
+        const selection = sdk.Editing.getSelection();
+        if (!selection || selection.objectType !== 'segment' || selection.ids.length === 0) return;
 
-        if (W.selectionManager.getSelectedFeatures().length === 0)
-            return;
-
+        // Check exit conditions across all selected segments
         let exit = false;
-        $.each(W.selectionManager.getSelectedFeatures(), function(i, segment) {
-            if(segment._wmeObject.attributes.fwdLaneCount != 0 || segment._wmeObject.attributes.revLaneCount != 0)
-                exit = true;
-            if(segment._wmeObject.attributes.fwdDirection == false || segment._wmeObject.attributes.revDirection == false)
-                exit = true;
-            if(pedonal_id.includes(segment._wmeObject.attributes.roadType))
-                exit = true;
-        });
-
-        if(exit)
-            return;
-
-        try {
-            if (document.getElementById('split-segment') !== null)
-                return;
-        } catch (e) {}
-
-        var btn1 = $('<wz-button color="secondary" size="sm" style="float:right;margin-top: 5px;">' + language.btnSplit + '</wz-button>');
-        btn1.click(mainSplitSegments);
-
-        var strMeters = language.strMeters;
-
-        var selSegmentsDistance = $('<wz-select id="segmentsDistance" data-type="numeric" value="5" style="width: 45%;float:left;" />');
-        selSegmentsDistance.append($('<wz-option value="5">5 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="7">7 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="9">9 ' + strMeters + '</wz-option>'));
-		selSegmentsDistance.append($('<wz-option value="10">10 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="11">11 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="12">12 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="13">13 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="14">14 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="15">15 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="17">17 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="19">19 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="21">21 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="23">23 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="25">25 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="37">37 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="40">40 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="42">42 ' + strMeters + '</wz-option>'));
-        selSegmentsDistance.append($('<wz-option value="45">45 ' + strMeters + '</wz-option>'));
-
-        var cnt = $('<div id="split-segment" class="form-group" style="display: flex;" />');
-
-        var divGroup1 = $('<div/>');
-        divGroup1.append($('<wz-label>' + language.strDistance + '</wz-label>'));
-        divGroup1.append(selSegmentsDistance);
-        divGroup1.append(btn1);
-        //var divControls1 = $('<div class="controls-container" />');
-        //divGroup1.append(divControls1);
-        cnt.append(divGroup1);
-
-        /*var divGroup2 = $('<div/>');
-        var divControls2 = $('<div class="btn-toolbar" />');
-        divControls2.append(btn1);
-        divGroup2.append(divControls2);
-        cnt.append(divGroup2);*/
-		
-//creates form at edit panel side
-
-        $(cnt).insertAfter("#segment-edit-general .attributes-form");
-
-        $("#segmentsDistance").val(localStorage.getItem("metersSplitSegment"));
-
-        $('#segmentsDistance').change(function(){
-            localStorage.setItem("metersSplitSegment", $("#segmentsDistance").val());
-        });
-    }
-
-    function orderSegments() {
-        var segmentosOrdenados = [];
-        var nos = [];
-        var noSeguinte = null;
-        $.each(W.selectionManager.getSelectedFeatures(), function(i1, segment) {
-            if(nos.length > 0)
-            {
-                let fromExiste = false;
-                let toExiste = false;
-                $.each(nos, function(i2, no1) {
-                    let no = null;
-                    if(no1[0] == segment._wmeObject.attributes.fromNodeID)
-                    {
-                        no1[1] = 2;
-                        fromExiste = true;
-                    }
-
-                    if(no1[0] == segment._wmeObject.attributes.toNodeID)
-                    {
-                        no1[1] = 2;
-                        toExiste = true;
-                    }
-                });
-                if(!fromExiste)
-                    nos.push([segment._wmeObject.attributes.fromNodeID,1]);
-                if(!toExiste)
-                    nos.push([segment._wmeObject.attributes.toNodeID,1]);
-            }
-            else
-            {
-                nos.push([segment._wmeObject.attributes.fromNodeID,1]);
-                nos.push([segment._wmeObject.attributes.toNodeID,1]);
-            }
-        });
-
-        let segmentos = W.selectionManager.getSelectedFeatures().length;
-
-        $.each(nos, function(i, no) {
-            if(no[1] == 1)
-            {
-                noSeguinte = no[0];
-                return false;
-            }
-        });
-
-        while(segmentos > 0)
-        {
-            $.each(W.selectionManager.getSelectedFeatures(), function(i, segment) {
-                if(segment._wmeObject.attributes.fromNodeID == noSeguinte)
-                {
-                    segmentosOrdenados.push(segment._wmeObject.attributes.id);
-                    noSeguinte = segment._wmeObject.attributes.toNodeID;
-                    segmentos--;
-                }
-                else if(segment._wmeObject.attributes.toNodeID == noSeguinte)
-                {
-                    segmentosOrdenados.push(segment._wmeObject.attributes.id);
-                    noSeguinte = segment._wmeObject.attributes.fromNodeID;
-                    segmentos--;
-                }
-            });
+        for (const segId of selection.ids) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) continue;
+            // fwdLaneCount / revLaneCount → fromLanesInfo / toLanesInfo lane counts
+            const fwdLanes = seg.fromLanesInfo ? seg.fromLanesInfo.laneCount : 0;
+            const revLanes = seg.toLanesInfo ? seg.toLanesInfo.laneCount : 0;
+            if (fwdLanes !== 0 || revLanes !== 0) { exit = true; break; }
+            // Must be strictly two-way — use SDK Segment.isTwoWay property
+            if (!seg.isTwoWay) { exit = true; break; }
+            if (pedestrianRoadIds.includes(seg.roadType)) { exit = true; break; }
         }
 
-        return segmentosOrdenados;
+        if (exit) return;
+        if (document.getElementById('split-segment') !== null) return;
+
+        const strMeters = language.strMeters;
+
+        const btn1 = document.createElement('wz-button');
+        btn1.setAttribute('color', 'secondary');
+        btn1.setAttribute('size', 'sm');
+        btn1.style.cssText = 'float:right;margin-top: 5px;';
+        btn1.textContent = language.btnSplit;
+        btn1.addEventListener('click', mainSplitSegments);
+
+        const selSegmentsDistance = document.createElement('wz-select');
+        selSegmentsDistance.id = 'segmentsDistance';
+        selSegmentsDistance.setAttribute('data-type', 'numeric');
+        selSegmentsDistance.setAttribute('value', '5');
+        selSegmentsDistance.style.cssText = 'width: 45%;float:left;';
+
+        const distanceOptions = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 19, 21, 23, 25, 27, 30, 32, 35, 37, 40, 42, 45];
+        for (const val of distanceOptions) {
+            const opt = document.createElement('wz-option');
+            opt.setAttribute('value', String(val));
+            opt.textContent = `${val} ${strMeters}`;
+            selSegmentsDistance.appendChild(opt);
+        }
+
+        const label = document.createElement('wz-label');
+        label.textContent = language.strDistance;
+
+        const divGroup1 = document.createElement('div');
+        divGroup1.appendChild(label);
+        divGroup1.appendChild(selSegmentsDistance);
+        divGroup1.appendChild(btn1);
+
+        const cnt = document.createElement('div');
+        cnt.id = 'split-segment';
+        cnt.className = 'form-group';
+        cnt.style.cssText = 'display: flex;';
+        cnt.appendChild(divGroup1);
+
+        const attrForm = document.querySelector('#segment-edit-general .attributes-form');
+        if (attrForm) attrForm.insertAdjacentElement('afterend', cnt);
+
+        // Restore saved distance preference
+        const savedDist = localStorage.getItem('metersSplitSegment');
+        if (savedDist) selSegmentsDistance.setAttribute('value', savedDist);
+
+        selSegmentsDistance.addEventListener('change', function () {
+            localStorage.setItem('metersSplitSegment', selSegmentsDistance.value);
+        });
     }
 
-    function mainSplitSegments() {
+    // ─── orderSegments: sort selected segment IDs from one end to the other ───
+    function orderSegments() {
+        const selection = sdk.Editing.getSelection();
+        if (!selection || selection.objectType !== 'segment') return [];
+        const selectedIds = selection.ids;
+        console.debug('[WAZEParallel] orderSegments: total selected =', selectedIds.length, 'ids =', selectedIds);
 
-        if (W.selectionManager.getSelectedFeatures().length > 1) {
+        const nodeOccurrences = [];
+        for (const segId of selectedIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) { console.warn('[WAZEParallel] orderSegments: segment not found in model:', segId); continue; }
+            console.debug(`[WAZEParallel] orderSegments: seg ${segId} fromNode=${seg.fromNodeId} toNode=${seg.toNodeId}`);
+            if (nodeOccurrences.length > 0) {
+                let fromExists = false;
+                let toExists = false;
+                for (const entry of nodeOccurrences) {
+                    if (entry[0] === seg.fromNodeId) { entry[1] = 2; fromExists = true; }
+                    if (entry[0] === seg.toNodeId)   { entry[1] = 2; toExists = true; }
+                }
+                if (!fromExists) nodeOccurrences.push([seg.fromNodeId, 1]);
+                if (!toExists)   nodeOccurrences.push([seg.toNodeId, 1]);
+            } else {
+                nodeOccurrences.push([seg.fromNodeId, 1]);
+                nodeOccurrences.push([seg.toNodeId, 1]);
+            }
+        }
+        console.debug('[WAZEParallel] orderSegments: node occurrence map =', nodeOccurrences);
+
+        let nextNodeId = null;
+        for (const entry of nodeOccurrences) {
+            if (entry[1] === 1) { nextNodeId = entry[0]; break; }
+        }
+        console.debug('[WAZEParallel] orderSegments: start node =', nextNodeId);
+
+        if (nextNodeId === null) {
+            // Circular selection or disconnected — fall back to original order
+            console.warn('[WAZEParallel] orderSegments: no endpoint node found (circular?), using original order');
+            return [...selectedIds];
+        }
+
+        const orderedSegIds = [];
+        const remaining = new Set(selectedIds);
+        let loopGuard = 0;
+        while (remaining.size > 0 && loopGuard < selectedIds.length * 2) {
+            loopGuard++;
+            let found = false;
+            for (const segId of remaining) {
+                const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+                if (!seg) { remaining.delete(segId); found = true; break; }
+                if (seg.fromNodeId === nextNodeId) {
+                    console.debug(`[WAZEParallel] orderSegments: placed seg ${segId} (fromNode match, next=${seg.toNodeId})`);
+                    orderedSegIds.push(segId);
+                    nextNodeId = seg.toNodeId;
+                    remaining.delete(segId);
+                    found = true;
+                    break;
+                } else if (seg.toNodeId === nextNodeId) {
+                    console.debug(`[WAZEParallel] orderSegments: placed seg ${segId} (toNode match, next=${seg.fromNodeId})`);
+                    orderedSegIds.push(segId);
+                    nextNodeId = seg.fromNodeId;
+                    remaining.delete(segId);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                console.warn('[WAZEParallel] orderSegments: chain broken at node', nextNodeId, '— remaining unplaced:', [...remaining]);
+                break;
+            }
+        }
+        console.debug('[WAZEParallel] orderSegments: result =', orderedSegIds);
+        return orderedSegIds;
+    }
+
+    // ─── mainSplitSegments: entry point for split button ─────────────────────
+    function mainSplitSegments() {
+        const selection = sdk.Editing.getSelection();
+        if (selection && selection.ids.length > 1) {
             WazeToastr.Alerts.confirm(
                 scriptName,
                 language.strSelMoreSeg,
-                function() { executeSplit(); },
-                function() { return; },
+                function () { executeSplit(); },
+                function () { return; },
                 "Continue",
                 "Cancel"
             );
             return;
         }
-
         executeSplit();
     }
 
+    // ─── executeSplit: core split logic ──────────────────────────────────────
+    // For single segment: pure WME SDK.
+    // For multiple connected segments: SDK for split+geometry+direction, but
+    // legacy Waze/Action/AddNode (with deferred-dispatch wrapper) to create the
+    // inter-segment junction nodes (no SDK splitSegment equivalent for
+    // multi-seg junctions). Turn-allowance uses sdk.DataModel.Nodes.allowNodeTurns
+    // for both single and multi-segment paths.
+    //
+    // CRITICAL: All AddNode actions MUST be collected and dispatched AFTER the
+    // full createSegments loop. Dispatching AddNode inside the loop corrupts the
+    // action-manager state before the next splitSegment call, causing segments
+    // after the first to fail silently.
     function executeSplit() {
-        var AddNode= require("Waze/Action/AddNode");
-        var UpdateObject= require("Waze/Action/UpdateObject");
-        var ModifyAllConnections= require("Waze/Action/ModifyAllConnections");
-        var distancia = $("#segmentsDistance").val();
-        var no = null;
-        var seg_left = [];
-        var seg_right = [];
+        const distance = parseFloat(document.getElementById('segmentsDistance').value);
+        console.debug('[WAZEParallel] executeSplit start — distance:', distance);
 
         last_node_A = null;
         last_node_B = null;
@@ -424,420 +379,496 @@ Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
         last_coord_left_last = null;
         last_coord_right_first = null;
         last_coord_right_last = null;
-        sentido_base = null;
+        baseDirection = null;
 
-        let segmentosOrdenados = orderSegments();
-        let actionsToAdd = []; // Collect all actions first
+        const orderedSegIds = orderSegments();
+        console.debug('[WAZEParallel] executeSplit: ordered segment IDs =', orderedSegIds,
+            '(', orderedSegIds.length, 'of', sdk.Editing.getSelection()?.ids?.length, 'selected)');
 
-        // Create a custom action wrapper to delay getAffectedUniqueIds calls
-        function AddNodeWrapper(point, segments, options) {
-            var AddNode = require("Waze/Action/AddNode");
-            var baseAction = new AddNode(point, segments, options);
-            
-            // Override getAffectedUniqueIds to delay its execution
-            var originalGetAffectedUniqueIds = baseAction.getAffectedUniqueIds;
-            baseAction.getAffectedUniqueIds = function(dataModel) {
-                if (this.node) {
-                    return originalGetAffectedUniqueIds.call(this, dataModel);
-                } else {
-                    // Return empty array if node hasn't been created yet
-                    return [];
-                }
-            };
-            
-            return baseAction;
+        if (orderedSegIds.length === 0) {
+            console.warn('[WAZEParallel] executeSplit: nothing to split');
+            return;
         }
 
-        $.each(segmentosOrdenados, function(i, idsegment) {
-            var segment = W.model.segments.getObjectById(idsegment);
-            let action_left = null;
-            let action_right = null;
-            if(last_node_A != null && last_node_B != null)
-            {
-                if(last_node_A == segment.getToNode())
-                    no = "AB";
-                if(last_node_B == segment.getFromNode())
-                    no = "BA";
-                if(last_node_A == segment.getFromNode())
-                    no = "AA";
-                if(last_node_B == segment.getToNode())
-                    no = "BB";
-                if(i == 1)
-                {
-                    if(no == "AB" || no == "AA")
-                        sentido_base = "BA";
-                    if(no == "BA" || no == "BB")
-                        sentido_base = "AB";
+        // Lazy traffic-side detection — use first segment for accurate per-segment chain lookup.
+        detectTrafficSide(orderedSegIds[0]);
+        console.debug('[WAZEParallel] executeSplit: isLeftHandTraffic =', isLeftHandTraffic);
+
+        const isMultiSeg = orderedSegIds.length > 1;
+
+        // AddNode has no SDK equivalent — must use legacy require.
+        // ModifyAllConnections → sdk.DataModel.Nodes.allowNodeTurns.
+        // UpdateObject(fwdTurnsLocked/revTurnsLocked) is NOT needed: those are UI-only
+        // verification flags; allowNodeTurns already sets the final turn state correctly.
+        let AddNodeLegacy = null;
+        if (isMultiSeg) {
+            console.debug('[WAZEParallel] Multi-segment mode: loading legacy AddNode');
+            try {
+                AddNodeLegacy = require('Waze/Action/AddNode');
+                console.debug('[WAZEParallel] Legacy AddNode loaded OK');
+            } catch (e) {
+                console.error('[WAZEParallel] Failed to load legacy AddNode:', e);
+            }
+        }
+
+        // AddNodeWrapper — mirrors the legacy version exactly.
+        // Delays getAffectedUniqueIds until the node actually exists, preventing
+        // the action manager from throwing when the node hasn't been created yet.
+        function AddNodeWrapper(point, segments) {
+            const base = new AddNodeLegacy(point, segments);
+            const origGetAffected = base.getAffectedUniqueIds.bind(base);
+            base.getAffectedUniqueIds = function (dataModel) {
+                return this.node ? origGetAffected(dataModel) : [];
+            };
+            return base;
+        }
+
+        const leftSegIds = [];
+        const rightSegIds = [];
+        let connMode = null;
+
+        // Collect all actions for post-split dispatch — mirroring actionsToAdd in legacy.
+        // Dispatching these INSIDE the loop would corrupt the action manager before the
+        // next splitSegment call.
+        const actionsToAdd = [];
+
+        for (let i = 0; i < orderedSegIds.length; i++) {
+            const idsegment = orderedSegIds[i];
+            const segment = sdk.DataModel.Segments.getById({ segmentId: idsegment });
+            if (!segment) {
+                console.warn('[WAZEParallel] executeSplit: segment not found in model (may already be split):', idsegment);
+                continue;
+            }
+
+            // Determine how this segment connects to the previous one (by shared node ID)
+            if (last_node_A !== null && last_node_B !== null) {
+                if (last_node_A === segment.toNodeId)   connMode = 'AB';
+                if (last_node_B === segment.fromNodeId) connMode = 'BA';
+                if (last_node_A === segment.fromNodeId) connMode = 'AA';
+                if (last_node_B === segment.toNodeId)   connMode = 'BB';
+                if (i === 1) {
+                    if (connMode === 'AB' || connMode === 'AA') baseDirection = 'BA';
+                    if (connMode === 'BA' || connMode === 'BB') baseDirection = 'AB';
+                    console.debug('[WAZEParallel] executeSplit: baseDirection set to', baseDirection);
                 }
             }
-            if(no == "AA" || no == "BB")
-            {
-                last_node_A = segment.getToNode();
-                last_node_B = segment.getFromNode();
-            }
-            else
-            {
-                last_node_A = segment.getFromNode();
-                last_node_B = segment.getToNode();
-            }
-            var segments = createSegments(segment, distancia, no);
 
-            if(i > 0)
-            {
-                if(no == "BA")
-                {
-                    // BA: left uses first point, right uses last point (reversed geometry)
-                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    actionsToAdd.push(action_left);
+            console.debug(`[WAZEParallel] Segment ${i}: id=${idsegment} connMode=${connMode}  fromNode=${segment.fromNodeId} toNode=${segment.toNodeId}  lastA=${last_node_A} lastB=${last_node_B}`);
 
-                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    actionsToAdd.push(action_right);
+            if (connMode === 'AA' || connMode === 'BB') {
+                last_node_A = segment.toNodeId;
+                last_node_B = segment.fromNodeId;
+            } else {
+                last_node_A = segment.fromNodeId;
+                last_node_B = segment.toNodeId;
+            }
+
+            const segments = createSegments(segment, distance, connMode);
+            if (!segments) {
+                console.warn('[WAZEParallel] executeSplit: createSegments returned null for segment', idsegment);
+                continue;
+            }
+            console.debug(`[WAZEParallel] Segment ${i} split → left=${segments[0]} right=${segments[1]}`);
+            console.debug('[WAZEParallel] Coord cache after split:',
+                'L[0]:', JSON.stringify(last_coord_left_first),
+                'L[-1]:', JSON.stringify(last_coord_left_last),
+                'R[0]:', JSON.stringify(last_coord_right_first),
+                'R[-1]:', JSON.stringify(last_coord_right_last));
+
+            if (i > 0 && isMultiSeg) {
+                const prevLeftId  = leftSegIds[leftSegIds.length - 1];
+                const prevRightId = rightSegIds[rightSegIds.length - 1];
+
+                // SDK: read junction coordinates from updated geometry — GeoJSON-native,
+                // no W.userscripts.toGeoJSONGeometry conversion needed.
+                // For BA/BB: curr-left first point; curr-right last point.
+                // For AB/AA: curr-left last point; curr-right first point.
+                const currLeftSdk  = sdk.DataModel.Segments.getById({ segmentId: segments[0] });
+                const currRightSdk = sdk.DataModel.Segments.getById({ segmentId: segments[1] });
+                // Legacy WME objects still required as participants for the AddNode action.
+                const prevLeftWme  = W.model.segments.getObjectById(prevLeftId);
+                const currLeftWme  = W.model.segments.getObjectById(segments[0]);
+                const prevRightWme = W.model.segments.getObjectById(prevRightId);
+                const currRightWme = W.model.segments.getObjectById(segments[1]);
+
+                let leftCoord  = null;
+                let rightCoord = null;
+
+                if (currLeftSdk && currRightSdk) {
+                    const leftCoords  = currLeftSdk.geometry.coordinates;
+                    const rightCoords = currRightSdk.geometry.coordinates;
+                    if (connMode === 'BA' || connMode === 'BB') {
+                        leftCoord  = { type: 'Point', coordinates: leftCoords[0] };
+                        rightCoord = { type: 'Point', coordinates: rightCoords[rightCoords.length - 1] };
+                    } else { // AB, AA
+                        leftCoord  = { type: 'Point', coordinates: leftCoords[leftCoords.length - 1] };
+                        rightCoord = { type: 'Point', coordinates: rightCoords[0] };
+                    }
+                } else {
+                    // Fallback to cached coords if SDK can't find the segment yet
+                    console.warn('[WAZEParallel] SDK segment not found for coord read, falling back to cache. left:', segments[0], 'right:', segments[1]);
+                    if (connMode === 'BA' || connMode === 'BB') {
+                        leftCoord  = { type: 'Point', coordinates: last_coord_left_first };
+                        rightCoord = { type: 'Point', coordinates: last_coord_right_last };
+                    } else {
+                        leftCoord  = { type: 'Point', coordinates: last_coord_left_last };
+                        rightCoord = { type: 'Point', coordinates: last_coord_right_first };
+                    }
                 }
-                if(no == "BB")
-                {
-                    // BB: After swap, connect like BA
-                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    actionsToAdd.push(action_left);
 
-                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[W.model.segments.getObjectById(segments[1]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    actionsToAdd.push(action_right);
+                console.debug(`[WAZEParallel] AddNode LEFT  coord=${JSON.stringify(leftCoord)}  segs: prev=${prevLeftId} curr=${segments[0]}  wme: prev=${!!prevLeftWme} curr=${!!currLeftWme}`);
+                console.debug(`[WAZEParallel] AddNode RIGHT coord=${JSON.stringify(rightCoord)} segs: prev=${prevRightId} curr=${segments[1]}  wme: prev=${!!prevRightWme} curr=${!!currRightWme}`);
+
+                if (prevLeftWme && currLeftWme && leftCoord) {
+                    actionsToAdd.push(AddNodeWrapper(leftCoord, [prevLeftWme, currLeftWme]));
+                } else {
+                    console.warn('[WAZEParallel] AddNode LEFT skipped — missing:', { prevLeftWme: !!prevLeftWme, currLeftWme: !!currLeftWme, leftCoord });
                 }
-                if(no == "AB")
-                {
-                    // AB: left uses last point, right uses first point (reversed geometry)
-                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    actionsToAdd.push(action_left);
-
-                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    actionsToAdd.push(action_right);
-                }
-                if(no == "AA")
-                {
-                    // AA: After swap, connect like AB
-                    action_left = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[0]).attributes.geometry.components[W.model.segments.getObjectById(segments[0]).attributes.geometry.components.length - 1]),[W.model.segments.getObjectById(seg_left[seg_left.length - 1]), W.model.segments.getObjectById(segments[0])]);
-                    actionsToAdd.push(action_left);
-
-                    action_right = AddNodeWrapper(W.userscripts.toGeoJSONGeometry(W.model.segments.getObjectById(segments[1]).attributes.geometry.components[0]),[W.model.segments.getObjectById(seg_right[seg_right.length - 1]), W.model.segments.getObjectById(segments[1])]);
-                    actionsToAdd.push(action_right);
+                if (prevRightWme && currRightWme && rightCoord) {
+                    actionsToAdd.push(AddNodeWrapper(rightCoord, [prevRightWme, currRightWme]));
+                } else {
+                    console.warn('[WAZEParallel] AddNode RIGHT skipped — missing:', { prevRightWme: !!prevRightWme, currRightWme: !!currRightWme, rightCoord });
                 }
             }
-            actionsToAdd.push(new UpdateObject(W.model.segments.getObjectById(segments[0]),{fwdTurnsLocked:true,revTurnsLocked:true}));
-            actionsToAdd.push(new UpdateObject(W.model.segments.getObjectById(segments[1]),{fwdTurnsLocked:true,revTurnsLocked:true}));
-            seg_left.push(segments[0]);
-            seg_right.push(segments[1]);
-        });
 
-        // Add all actions
-        actionsToAdd.forEach(function(action) {
-            W.model.actionManager.add(action);
-        });
+            leftSegIds.push(segments[0]);
+            rightSegIds.push(segments[1]);
+        }
 
-        let additionalActions = []; // New array for remaining actions	
+        // ── Phase 2: dispatch all AddNode actions now that all segments are split.
+        if (isMultiSeg) {
+            console.debug(`[WAZEParallel] Dispatching ${actionsToAdd.length} AddNode action(s)`);
+            actionsToAdd.forEach(a => W.model.actionManager.add(a));
 
-        // Modify connections for all left segments		
-        $.each(seg_left, function(i, segmentos_left) {
-                let segment = W.model.segments.getObjectById(segmentos_left)
-            if(segment) {
-                // Allow turns at both ends of each segment
-                if(segment.getFromNode() != null)
-                    additionalActions.push(new ModifyAllConnections(segment.getFromNode(),true));
-                if(segment.getToNode() != null)
-                    additionalActions.push(new ModifyAllConnections(segment.getToNode(),true));
+            // SDK: allowNodeTurns replaces legacy ModifyAllConnections.
+            console.debug('[WAZEParallel] Allowing turns at all nodes of produced segments via SDK');
+            for (const segId of [...leftSegIds, ...rightSegIds]) {
+                const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+                if (!seg) { console.warn('[WAZEParallel] allowNodeTurns: SDK segment missing for seg', segId); continue; }
+                if (seg.fromNodeId !== null) sdk.DataModel.Nodes.allowNodeTurns({ nodeId: seg.fromNodeId, allow: true });
+                if (seg.toNodeId   !== null) sdk.DataModel.Nodes.allowNodeTurns({ nodeId: seg.toNodeId,   allow: true });
             }
-        });
-        
-        // Modify connections for all right segments
-        $.each(seg_right, function(i, segmentos_right) {
-                let segment = W.model.segments.getObjectById(segmentos_right)
-            if(segment) {
-                // Allow turns at both ends of each segment
-                if(segment.getFromNode() != null)
-                    additionalActions.push(new ModifyAllConnections(segment.getFromNode(),true));
-                if(segment.getToNode() != null)
-                    additionalActions.push(new ModifyAllConnections(segment.getToNode(),true));
+        } else {
+            // Single segment — pure SDK turn-allowance.
+            for (const segId of [...leftSegIds, ...rightSegIds]) {
+                const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+                if (!seg) continue;
+                if (seg.fromNodeId !== null) sdk.DataModel.Nodes.allowNodeTurns({ nodeId: seg.fromNodeId, allow: true });
+                if (seg.toNodeId   !== null) sdk.DataModel.Nodes.allowNodeTurns({ nodeId: seg.toNodeId,   allow: true });
             }
-        });
+        }
 
-        // Add the remaining actions
-        additionalActions.forEach(function(action) {
-            W.model.actionManager.add(action);
-        });
-
-        // Show success message
-        WazeToastr.Alerts.success(scriptName, `Successfully split ${seg_left.length} segment${seg_left.length > 1 ? 's' : ''} with ${distancia}m gap!`);
+        console.debug('[WAZEParallel] executeSplit done — left segs:', leftSegIds, '/ right segs:', rightSegIds);
+        WazeToastr.Alerts.success(
+            scriptName,
+            `Successfully split ${leftSegIds.length} segment${leftSegIds.length > 1 ? 's' : ''} with ${distance}m gap!`
+        );
     }
 
-    function createSegments(sel, displacement, no) {
-        var wazefeatureVectorSegment = require("Waze/Feature/Vector/Segment");
-        var UpdateSegmentGeometry= require("Waze/Action/UpdateSegmentGeometry");
-        var UpdateObject= require("Waze/Action/UpdateObject");
+    // ─── createSegments: split one segment and compute offset geometries ──────
+    // 
+    // NOTE: OpenLayers geometry operations (rotate, resize, clone on OL.Geometry.Point)
+    // are replaced here with turf.js equivalents.
+    // turf works in WGS84 (lon/lat). WME SDK segment.geometry is a GeoJSON LineString
+    // already in WGS84.
+    //
+    function createSegments(sel, displacement, connMode) {
+        console.debug('[WAZEParallel] createSegments: segId=', sel.id, 'displacement=', displacement, 'connMode=', connMode);
+        // SDK: segment.geometry is already a GeoJSON LineString { type:'LineString', coordinates:[[lon,lat],...] }
+        const geomCoords = sel.geometry.coordinates;
 
-        var streetVertices = sel.geometry.simplify(0.001).getVertices();
-        var leftPoints = null;
-        var rightPoints = null;
+        // Simplify geometry: for performance, keep only significant vertices.
+        // turf.simplify works in WGS84 (lon/lat degrees).
+        const lineFeature = turf.lineString(geomCoords);
+        // tolerance in degrees ≈ 0.000001 is ~0.1m; 0.00001 is ~1m — use small value to preserve shape
+        const simplified = turf.simplify(lineFeature, { tolerance: 0.000001, highQuality: true });
+        const streetCoords = simplified.geometry.coordinates; // [[lon,lat], ...]
 
-        var i;
-        var leftPa,
-            rightPa,
-            leftPb,
-            rightPb;
-        var prevLeftEq,
-            prevRightEq;
+        let leftPoints = null;
+        let rightPoints = null;
+        let prevLeftEq = null;
+        let prevRightEq = null;
+        let leftPa, rightPa, leftPb, rightPb;
 
-        var first = 0;
+        // displacement is in meters; convert to displacement/2 for each side
+        const halfD = displacement / 2;
 
-        for (i = first; i < streetVertices.length - 1; i++) {
-            var pa = streetVertices[i];
-            var pb = streetVertices[i + 1];
+        for (let i = 0; i < streetCoords.length - 1; i++) {
+            const pa = streetCoords[i];   // [lon, lat]
+            const pb = streetCoords[i + 1]; // [lon, lat]
 
-            var points = [pa, pb];
-            var ls = new OpenLayers.Geometry.LineString(points);
-            var len = ls.getGeodesicLength(W.map.getProjectionObject());
-            var scale = (len + displacement / 2) / len;
+            // Bearing from pa to pb
+            const bearing = turf.bearing(turf.point(pa), turf.point(pb));
 
-            leftPa = pa.clone();
-            leftPa.resize(scale, pb, 1);
-            rightPa = leftPa.clone();
-            // Swap rotations for left-handed drive (driving on the left)
-            leftPa.rotate(-90, pa);  // Was 90, now -90
-            rightPa.rotate(90, pa);  // Was -90, now 90
+            // LHT (driving on left): left carriageway = bearing-90, right = bearing+90.
+            // RHT (driving on right): sides are physically swapped — invert the offsets.
+            const bearingLeft  = isLeftHandTraffic ? (bearing - 90 + 360) % 360 : (bearing + 90) % 360;
+            const bearingRight = isLeftHandTraffic ? (bearing + 90) % 360 : (bearing - 90 + 360) % 360;
 
-            leftPb = pb.clone();
-            leftPb.resize(scale, pa, 1);
-            rightPb = leftPb.clone();
-            leftPb.rotate(90, pb);   // Was -90, now 90
-            rightPb.rotate(-90, pb); // Was 90, now -90
+            // Distance along segment for offset endpoints
+            const segLenKm = turf.distance(turf.point(pa), turf.point(pb)); // km
+            const halfDKm = halfD / 1000;
 
-            var leftEq = getEquation({
-                'x1': leftPa.x,
-                'y1': leftPa.y,
-                'x2': leftPb.x,
-                'y2': leftPb.y
-            });
-            var rightEq = getEquation({
-                'x1': rightPa.x,
-                'y1': rightPa.y,
-                'x2': rightPb.x,
-                'y2': rightPb.y
-            });
+            // Compute offset points at distance halfD from each vertex, perpendicular to bearing
+            // "Extend" pa backward along bearing by halfD to get offset origin, then rotate
+            const leftPaPoint  = turf.destination(turf.point(pa), halfDKm, bearingLeft,  { units: 'kilometers' });
+            const rightPaPoint = turf.destination(turf.point(pa), halfDKm, bearingRight, { units: 'kilometers' });
+            const leftPbPoint  = turf.destination(turf.point(pb), halfDKm, bearingLeft,  { units: 'kilometers' });
+            const rightPbPoint = turf.destination(turf.point(pb), halfDKm, bearingRight, { units: 'kilometers' });
+
+            leftPa  = leftPaPoint.geometry.coordinates;
+            rightPa = rightPaPoint.geometry.coordinates;
+            leftPb  = leftPbPoint.geometry.coordinates;
+            rightPb = rightPbPoint.geometry.coordinates;
+
+            // Line equations for intersection calculation (in geographic coords)
+            const leftEq  = getEquation({ x1: leftPa[0],  y1: leftPa[1],  x2: leftPb[0],  y2: leftPb[1] });
+            const rightEq = getEquation({ x1: rightPa[0], y1: rightPa[1], x2: rightPb[0], y2: rightPb[1] });
+
             if (leftPoints === null && rightPoints === null) {
-                leftPoints = [leftPa];
+                leftPoints  = [leftPa];
                 rightPoints = [rightPa];
             } else {
-                var li = intersectX(leftEq, prevLeftEq);
-                var ri = intersectX(rightEq, prevRightEq);
-                if (li && ri) {
-                    if (i >= 0) {
-                        leftPoints.unshift(li);
-                        rightPoints.push(ri);
+                const li = intersectX(leftEq, prevLeftEq);
+                const ri = intersectX(rightEq, prevRightEq);
 
-                        if (i == 0) {
-                            leftPoints = [li];
-                            rightPoints = [ri];
-                        }
+                if (li && ri) {
+                    leftPoints.unshift(li);
+                    rightPoints.push(ri);
+                    if (i === 0) {
+                        leftPoints  = [li];
+                        rightPoints = [ri];
                     }
                 } else {
-                    if (i >= 0) {
-                        leftPoints.unshift(leftPb.clone());
-                        rightPoints.push(rightPb.clone());
-
-                        if (i == 0) {
-                            leftPoints = [leftPb];
-                            rightPoints = [rightPb];
-                        }
+                    leftPoints.unshift([...leftPb]);
+                    rightPoints.push([...rightPb]);
+                    if (i === 0) {
+                        leftPoints  = [[...leftPb]];
+                        rightPoints = [[...rightPb]];
                     }
                 }
             }
 
-            prevLeftEq = leftEq;
+            prevLeftEq  = leftEq;
             prevRightEq = rightEq;
-
         }
-        leftPoints.push(leftPb);
-        rightPoints.push(rightPb);
 
-        leftPoints.unshift(leftPoints[leftPoints.length-1]);
+        // Append final point
+        leftPoints.push([...leftPb]);
+        rightPoints.push([...rightPb]);
+
+        // Rotate left array so first→last ordering is consistent
+        leftPoints.unshift(leftPoints[leftPoints.length - 1]);
         leftPoints.pop();
 
-        var newSegEsq = sel.attributes.geometry.clone();
-        var newSegDir = sel.attributes.geometry.clone();
+        // Split the original segment at midpoint using SDK
+        console.debug('[WAZEParallel] createSegments: calling SplitSegment, leftPoints=', leftPoints.length, 'rightPoints=', rightPoints.length);
+        const splitIds = SplitSegment(sel);
+        if (!splitIds) return null;
 
-        var segmentos = SplitSegment(sel);
-
-        leftPoints = leftPoints.reverse();
-
-        // Reverse right points so both segments flow in the same direction (A->B)
+        // Reverse both so they flow A→B
+        leftPoints  = leftPoints.reverse();
         rightPoints = rightPoints.reverse();
 
-        // For left-handed drive with rotation swap, AA/BB need different handling
-        if(no == "AA" || no == "BB")
-        {
-            // Swap left and right (already reversed, so just swap without additional reversal)
-            let aux = leftPoints;
-            leftPoints = rightPoints;
+        // For AA/BB connection modes, swap left/right
+        if (connMode === "AA" || connMode === "BB") {
+            const aux  = leftPoints;
+            leftPoints  = rightPoints;
             rightPoints = aux;
         }
 
-        if(last_coord_left_first != null && last_coord_left_last != null && last_coord_right_last != null && last_coord_right_first != null)
-        {
-            if(no == "AB")
-            {
-                // AB: segments flow in same direction
-                leftPoints.pop();
-                leftPoints.push(last_coord_left_first);
-                // Right segment is reversed, so we connect the beginning (first element after reversal) to previous end
-                rightPoints.shift();
-                rightPoints.unshift(last_coord_right_last);
+        // Adjust endpoints to match previous iteration's cached connector coords
+        if (last_coord_left_first !== null && last_coord_left_last !== null &&
+            last_coord_right_first !== null && last_coord_right_last !== null) {
+
+            if (connMode === "AB") {
+                leftPoints[leftPoints.length - 1]  = last_coord_left_first;
+                rightPoints[0]                     = last_coord_right_last;
             }
-            if(no == "BA")
-            {
-                // BA: segments flow in same direction but from opposite end
-                leftPoints.shift();
-                leftPoints.unshift(last_coord_left_last);
-                // Right segment is reversed, so we connect the end (last element after reversal) to previous beginning
-                rightPoints.pop();
-                rightPoints.push(last_coord_right_first);
+            if (connMode === "BA") {
+                leftPoints[0]                      = last_coord_left_last;
+                rightPoints[rightPoints.length - 1] = last_coord_right_first;
             }
-            if(no == "AA")
-            {
-                // AA: second segment connects at start nodes (flipped)
-                // After swap, left and right are swapped, so we need opposite connection
-                leftPoints.pop();
-                leftPoints.push(last_coord_left_first);
-                rightPoints.shift();
-                rightPoints.unshift(last_coord_right_last);
+            if (connMode === "AA") {
+                leftPoints[leftPoints.length - 1]  = last_coord_left_first;
+                rightPoints[0]                     = last_coord_right_last;
             }
-            if(no == "BB")
-            {
-                // BB: second segment connects at end nodes (flipped)
-                // After swap, left and right are swapped, so we need opposite connection
-                leftPoints.shift();
-                leftPoints.unshift(last_coord_left_last);
-                rightPoints.pop();
-                rightPoints.push(last_coord_right_first);
+            if (connMode === "BB") {
+                leftPoints[0]                      = last_coord_left_last;
+                rightPoints[rightPoints.length - 1] = last_coord_right_first;
             }
         }
 
-        newSegEsq.components = leftPoints;
-        newSegDir.components = rightPoints;
+        // Cache connector coords for next iteration
+        last_coord_left_first  = leftPoints[0];
+        last_coord_left_last   = leftPoints[leftPoints.length - 1];
+        last_coord_right_first = rightPoints[0];
+        last_coord_right_last  = rightPoints[rightPoints.length - 1];
 
-        // Cache coordinates - right segment is reversed, so first/last are swapped
-        last_coord_left_first = leftPoints[0];
-        last_coord_left_last = leftPoints[leftPoints.length - 1];
-        // For right segment: reversed geometry means first point is at index 0 (which is the "end"), 
-        // and last point is at length-1 (which is the "beginning")
-        last_coord_right_first = rightPoints[0];  // This is actually the end of the original right segment
-        last_coord_right_last = rightPoints[rightPoints.length - 1];  // This is actually the start
+        // Build GeoJSON LineString geometries for SDK updateSegment
+        const newGeomLeft  = { type: 'LineString', coordinates: leftPoints };
+        const newGeomRight = { type: 'LineString', coordinates: rightPoints };
 
-        var leftsegment = W.model.segments.getObjectById(segmentos[0]);
-        var rightsegment = W.model.segments.getObjectById(segmentos[1]);
+        const leftSegId  = splitIds[0];
+        const rightSegId = splitIds[1];
 
-        W.model.actionManager.add(new UpdateSegmentGeometry(leftsegment,leftsegment.attributes.geoJSONGeometry,W.userscripts.toGeoJSONGeometry(newSegEsq)));
-        W.model.actionManager.add(new UpdateSegmentGeometry(rightsegment,rightsegment.attributes.geoJSONGeometry,W.userscripts.toGeoJSONGeometry(newSegDir)));
+        console.debug('[WAZEParallel] createSegments: updateSegment geometry left=', leftSegId, 'right=', rightSegId);
+        // SDK: updateSegment with new geometry — replaces UpdateSegmentGeometry action
+        sdk.DataModel.Segments.updateSegment({ segmentId: leftSegId,  geometry: newGeomLeft });
+        sdk.DataModel.Segments.updateSegment({ segmentId: rightSegId, geometry: newGeomRight });
 
-        // Both segments now flow in the same direction (A->B)
-        // Left segment: forward only (A->B)
-        // Right segment: forward only (A->B, geometry already reversed)
-        if(no == "AA" || no == "BB")
-        {
-            W.model.actionManager.add(new UpdateObject(rightsegment, {'revDirection': false, 'fwdMaxSpeed': rightsegment.attributes.revMaxSpeed, 'revMaxSpeed': rightsegment.attributes.fwdMaxSpeed}));
-            W.model.actionManager.add(new UpdateObject(leftsegment, {'revDirection': false, 'fwdMaxSpeed': leftsegment.attributes.revMaxSpeed, 'revMaxSpeed': leftsegment.attributes.fwdMaxSpeed}));
+        // Set direction: one-way A→B for both segments
+        // SDK SegmentDirection values: 'A_TO_B' | 'B_TO_A' | 'TWO_WAY'
+        const leftSeg  = sdk.DataModel.Segments.getById({ segmentId: leftSegId });
+        const rightSeg = sdk.DataModel.Segments.getById({ segmentId: rightSegId });
+
+        if (connMode === "AA" || connMode === "BB") {
+            // Swap speed limits when direction is flipped
+            if (leftSeg) {
+                sdk.DataModel.Segments.updateSegment({
+                    segmentId: leftSegId,
+                    direction: 'A_TO_B',
+                    fwdSpeedLimit: leftSeg.revSpeedLimit,
+                    revSpeedLimit: leftSeg.fwdSpeedLimit
+                });
+            }
+            if (rightSeg) {
+                sdk.DataModel.Segments.updateSegment({
+                    segmentId: rightSegId,
+                    direction: 'A_TO_B',
+                    fwdSpeedLimit: rightSeg.revSpeedLimit,
+                    revSpeedLimit: rightSeg.fwdSpeedLimit
+                });
+            }
+        } else {
+            sdk.DataModel.Segments.updateSegment({ segmentId: leftSegId,  direction: 'A_TO_B' });
+            sdk.DataModel.Segments.updateSegment({ segmentId: rightSegId, direction: 'A_TO_B' });
         }
-        else
-        {
-            W.model.actionManager.add(new UpdateObject(rightsegment, {'revDirection': false}));
-            W.model.actionManager.add(new UpdateObject(leftsegment, {'revDirection': false}));
-        }
 
-        return segmentos;
-
+        console.debug('[WAZEParallel] createSegments done — returning', splitIds);
+        return splitIds;
     }
+    // Replaces legacy Waze/Action/SplitSegments require() pattern.
+    // SDK: DataModel.Segments.splitSegment({ segmentId, splitPoint: GeoJSON Point })
+    //
+    function SplitSegment(seg) {
+        console.debug('[WAZEParallel] SplitSegment: segId=', seg.id, 'coords=', seg.geometry.coordinates.length);
+        if (!sdk.DataModel.Segments.hasPermissions({ segmentId: seg.id })) {
+            console.warn('[WAZEParallel] SplitSegment: no permissions for segment', seg.id);
+            return undefined;
+        }
+
+        const coords = seg.geometry.coordinates;
+        if (!coords || coords.length < 2) return undefined;
+
+        // Ensure at least 3 points (insert midpoint if only 2 vertices)
+        let workCoords = [...coords];
+        if (workCoords.length === 2) {
+            const mid = [
+                (workCoords[0][0] + workCoords[1][0]) / 2,
+                (workCoords[0][1] + workCoords[1][1]) / 2
+            ];
+            workCoords = [workCoords[0], mid, workCoords[1]];
+            // Update geometry first so split point is valid
+            sdk.DataModel.Segments.updateSegment({
+                segmentId: seg.id,
+                geometry: { type: 'LineString', coordinates: workCoords }
+            });
+        }
+
+        // Split at the middle vertex
+        const midIdx = Math.ceil(workCoords.length / 2 - 1);
+        const splitPoint = { type: 'Point', coordinates: workCoords[midIdx] };
+
+        const [id1, id2] = sdk.DataModel.Segments.splitSegment({ segmentId: seg.id, splitPoint });
+        return [id1, id2];
+    }
+
+    // ─── Geometry helpers ────────────────────────────────────────────────────
+    // These work in geographic (lon/lat) coordinate space.
+    // NOTE: These are the same line-equation helpers as the legacy code —
+    // they cannot be replaced by SDK methods as the SDK has no geometry math APIs.
+    // Using turf for actual point-offset operations above is the migration path.
 
     function getEquation(segment) {
-        if (segment.x2 == segment.x1)
-            return {
-                'x': segment.x1
-            };
-
-        var slope = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
-        var offset = segment.y1 - (slope * segment.x1);
-        return {
-            'slope': slope,
-            'offset': offset
-        };
+        if (segment.x2 === segment.x1) return { x: segment.x1 };
+        const slope = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
+        const offset = segment.y1 - slope * segment.x1;
+        return { slope, offset };
     }
 
-
-    function intersectX(eqa, eqb, defaultPoint) {
-        if ("number" == typeof eqa.slope && "number" == typeof eqb.slope) {
-            if (eqa.slope == eqb.slope)
-                return null;
-
-            var ix = (eqb.offset - eqa.offset) / (eqa.slope - eqb.slope);
-            var iy = eqa.slope * ix + eqa.offset;
-            return new OpenLayers.Geometry.Point(ix, iy);
-        } else if ("number" == typeof eqa.x) {
-            return new OpenLayers.Geometry.Point(eqa.x, eqb.slope * eqa.x + eqb.offset);
-        } else if ("number" == typeof eqb.y) {
-            return new OpenLayers.Geometry.Point(eqb.x, eqa.slope * eqb.x + eqa.offset);
+    function intersectX(eqa, eqb) {
+        if (typeof eqa.slope === 'number' && typeof eqb.slope === 'number') {
+            if (eqa.slope === eqb.slope) return null;
+            const ix = (eqb.offset - eqa.offset) / (eqa.slope - eqb.slope);
+            const iy = eqa.slope * ix + eqa.offset;
+            return [ix, iy]; // [lon, lat]
+        } else if (typeof eqa.x === 'number') {
+            return [eqa.x, eqb.slope * eqa.x + eqb.offset];
+        } else if (typeof eqb.x === 'number') {
+            return [eqb.x, eqa.slope * eqb.x + eqa.offset];
         }
         return null;
     }
 
-
-    function SplitSegment(road)
-    {
-        let SplitSegments= require("Waze/Action/SplitSegments");
-        let UpdateSegmentGeometry= require("Waze/Action/UpdateSegmentGeometry");
-
-        if(road.arePropertiesEditable())
-        {
-            var geo=road.geometry.clone();
-            var action=null;
-            if(geo.components.length<2)
-            {
-                return undefined;
-            }
-            if(geo.components.length==2)
-            {
-                geo.components.splice(1,0,new OpenLayers.Geometry.Point(((geo.components[1].x+geo.components[0].x)/2),((geo.components[1].y+geo.components[0].y)/2)));
-                W.model.actionManager.add(new UpdateSegmentGeometry(road,road.attributes.geoJSONGeometry,W.userscripts.toGeoJSONGeometry(geo)));
-            }
-            action=new SplitSegments(road,{splitAtPoint:W.userscripts.toGeoJSONGeometry(road.attributes.geometry.components[Math.ceil(road.attributes.geometry.components.length/2-1)])});
-            W.model.actionManager.add(action);
-            var RoadIds=new Array();
-            if(action.splitSegmentPair!==null)
-            {
-                for(var i=0;i<action.splitSegmentPair.length;i++)
-                {
-                    RoadIds.push(action.splitSegmentPair[i].attributes.id);
-                }
-            }
-            return RoadIds;
+    // ─── Script update monitor ────────────────────────────────────────────────
+    function scriptupdatemonitor() {
+        if (WazeToastr?.Ready) {
+            const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
+            updateMonitor.start(2, true);
+            WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
+        } else {
+            setTimeout(scriptupdatemonitor, 250);
         }
     }
 
-    
-    // function verifyNull(variable)
-    // {
-    //     if(variable === null)
-    //         return "";
-    //     return variable["v"];
-    // }
-
-    function scriptupdatemonitor() {
-      if (WazeToastr?.Ready) {
-        // Create and start the ScriptUpdateMonitor
-        const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
-        updateMonitor.start(2, true); // Check every 2 hours, check immediately
-
-        // Show the update dialog for the current version
-        WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
-      } else {
-        setTimeout(scriptupdatemonitor, 250);
-      }
-    }
     scriptupdatemonitor();
-    
     bootstrap();
+
 })();
+
+/* Changelog 2026.03.31.01 - Replaced broken segment-address country detection with sdk.Countries.getTopCountry().
+                 The SDK Segment interface has no .address property, so seg?.address?.country was
+                 always undefined. detectTrafficSide() now calls sdk.Countries.getTopCountry()
+                 directly and reads isLeftHandTraffic from the returned Country object.
+                 Both LHT and RHT countries are now correctly detected and carriageways are
+                 placed on the proper physical sides of the road.
+ 2026.03.30.08 - Fixed traffic-side detection caching bug: isTrafficSideDetected flag caused RHT
+                 countries to be treated as LHT when the editor was previously used in an
+                 LHT country in the same session. Removed the flag so detection always
+                 re-runs per split. Segment address is now checked first (most accurate);
+                 sdk.Countries.getTopCountry() is the fallback. Country name is now logged.
+ 2026.03.30.07 - Added left-hand vs right-hand traffic detection via sdk.Countries.getTopCountry().
+                 Bearing offsets in createSegments() are now swapped for RHT countries so
+                 carriageways are placed on the correct physical sides of the road.
+ 2026.03.30.06 - Removed getPermalink(): clipboard output is not consumed by any external tool,
+                 so the permalink field is unnecessary. Removed sdk.Map.getPermalink() call,
+                 async/await from direction-copy button handlers, and the helper function.
+ 2026.03.30.04 - Removed legacy require('Waze/Action/UpdateObject') and fwdTurnsLocked /
+                 revTurnsLocked actions: these are UI-only verification flags that do not
+                 affect functional correctness. sdk.DataModel.Nodes.allowNodeTurns already
+                 sets the final turn state correctly. AddNode is now the only remaining
+                 legacy action (no SDK splitSegment equivalent for multi-seg junctions). 2026.03.30.03 - Replaced legacy ModifyAllConnections with sdk.DataModel.Nodes.allowNodeTurns
+                 for multi-segment mode (now consistent with single-segment path).
+                 Replaced W.model.segments.getObjectById + .attributes.geometry.components +
+                 W.userscripts.toGeoJSONGeometry for junction coord reading with
+                 sdk.DataModel.Segments.getById + .geometry.coordinates (GeoJSON-native).
+                 W.model.segments.getObjectById retained only where AddNode / UpdateObject
+                 legacy actions require internal WME objects.
+ 2026.03.30.02 - Fixed multi-segment split: only the first segment was being split.
+                 Fixes:
+                   - orderSegments: loop now uses a Set + loop-guard to avoid breaking
+                     the chain on disconnected or already-visited segments.
+                   - executeSplit: added legacy require('Waze/Action/UpdateObject') to
+                     lock turns (fwdTurnsLocked/revTurnsLocked) on each produced segment
+                     before AddNode is dispatched — required for junction nodes to form.
+                   - AddNode junction coordinates now read directly from the updated WME
+                     segment geometry (.attributes.geometry.components) instead of
+                     the cached coord variables, matching legacy behaviour exactly.
+                   - All collected actions (AddNode + UpdateObject) dispatched together
+                     after the split loop, before ModifyAllConnections.
+                 Added verbose console.debug logs throughout for easier diagnosis.
+ 2026.03.30.01 - Migrated from legacy WME API to WME SDK.
+                 Geometry math migrated from OpenLayers to turf.js.
+                 clipboard copy migrated from execCommand to GM_setClipboard.
+*/
