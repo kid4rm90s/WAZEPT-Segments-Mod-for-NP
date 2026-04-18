@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Waze Parallel Segments
-// @version      2026.04.17.02
+// @version      2026.04.18.01
 // @description  Splits two-way segments into parallel one-way carriageways. Supports both left-hand and right-hand traffic countries.
 // @author       kid4rm90s & copilot (original author J0N4S13)
 // @include 	 /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
@@ -10,7 +10,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
 // @grant        unsafeWindow
- // @require https://update.greasyfork.org/scripts/560385/code/WazeToastr.js
+// @require 	 https://greasyfork.org/scripts/560385/code/WazeToastr.js
 // @require      https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js
 // @namespace    https://greasyfork.org/users/1087400
 /* 
