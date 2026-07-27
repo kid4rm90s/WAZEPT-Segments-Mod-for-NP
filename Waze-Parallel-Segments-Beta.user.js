@@ -7,6 +7,7 @@
 // @exclude      https://www.waze.com/user/*editor/*
 // @exclude      https://www.waze.com/*/user/*editor/*
 // @connect      greasyfork.org
+// @connect      raw.githubusercontent.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
 // @grant        unsafeWindow
@@ -17,8 +18,9 @@
 Original Author Thanks : J0N4S13 (jonathanserrario@gmail.com)
 Migrated to WME SDK by kid4rm90s
 */
-// @downloadURL https://update.greasyfork.org/scripts/491466/Waze%20Parallel%20Segments.user.js
-// @updateURL https://update.greasyfork.org/scripts/491466/Waze%20Parallel%20Segments.meta.js
+// @downloadURL https://raw.githubusercontent.com/kid4rm90s/Waze-Parallel-Segments/Beta/Waze-Parallel-Segments-Beta.user.js
+// @updateURL https://raw.githubusercontent.com/kid4rm90s/Waze-Parallel-Segments/Beta/Waze-Parallel-Segments-Beta.user.js
+
 // ==/UserScript==
 
 (function () {
@@ -30,8 +32,8 @@ Migrated to WME SDK by kid4rm90s
         `<em>Enjoy Mapping!</em>`;
     const scriptName = GM_info.script.name;
     const scriptVersion = GM_info.script.version;
-    const downloadUrl = GM_info.script.downloadURL;
-    const forumURL = 'https://greasyfork.org/en/scripts/491466-waze-parallel-segments/feedback';
+    const downloadUrl = 'https://raw.githubusercontent.com/kid4rm90s/Waze-Parallel-Segments/Beta/Waze-Parallel-Segments-Beta.user.js';
+    const forumURL = 'https://github.com/kid4rm90s/Waze-Parallel-Segments/issues';
 
     // ─── Road type IDs ──────────────────────────────────────────────────────────
     // Road types that are drivable (used in deactivated road-conversion code kept for reference)
@@ -1467,7 +1469,14 @@ Migrated to WME SDK by kid4rm90s
     // ─── Script update monitor ────────────────────────────────────────────────
     function scriptupdatemonitor() {
         if (WazeToastr?.Ready) {
-            const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
+            const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(
+        scriptName,
+        scriptVersion,
+        downloadUrl,
+        GM_xmlhttpRequest,
+        downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
+        /@version\s+(.+)/i, // metaRegExp - extracts version from @version tag
+      );
             updateMonitor.start(2, true);
             WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
         } else {
