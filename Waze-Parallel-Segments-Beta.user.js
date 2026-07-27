@@ -1466,10 +1466,11 @@ Migrated to WME SDK by kid4rm90s
         return null;
     }
 
-    // ─── Script update monitor ────────────────────────────────────────────────
-    function scriptupdatemonitor() {
-        if (WazeToastr?.Ready) {
-            const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(
+  function scriptupdatemonitor() {
+    if (WazeToastr?.Ready) {
+      // Create and start the ScriptUpdateMonitor
+      // For GitHub raw URLs, we need to specify metaUrl explicitly (same as downloadUrl for GitHub)
+      const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(
         scriptName,
         scriptVersion,
         downloadUrl,
@@ -1477,14 +1478,15 @@ Migrated to WME SDK by kid4rm90s
         downloadUrl, // metaUrl - for GitHub, use the same URL as it contains the @version tag
         /@version\s+(.+)/i, // metaRegExp - extracts version from @version tag
       );
-            updateMonitor.start(2, true);
-            WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
-        } else {
-            setTimeout(scriptupdatemonitor, 250);
-        }
-    }
+      updateMonitor.start(2, true); // Check every 2 hours, check immediately
 
-    scriptupdatemonitor();
+      // Show the update dialog for the current version
+      WazeToastr.Interface.ShowScriptUpdate(scriptName, scriptVersion, updateMessage, downloadUrl, forumURL);
+    } else {
+      setTimeout(scriptupdatemonitor, 250);
+    }
+  }
+  scriptupdatemonitor();
     bootstrap();
 
 })();
