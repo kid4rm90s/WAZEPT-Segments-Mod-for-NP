@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Waze Parallel Segments
-// @version      2026.06.29.01
-// @description  Splits two-way segments into parallel one-way carriageways. Supports both left-hand and right-hand traffic countries.
+// @version      2026.08.04.01
+// @description  Splits two-way segments into parallel one-way carriageways, and adjusts existing one-way segments to be parallel to a user-drawn guide line. Supports both left-hand and right-hand traffic countries.
 // @author       kid4rm90s & copilot (original author J0N4S13)
 // @include 	 /^https:\/\/(www|beta)\.waze\.com\/(?!user\/)(.{2,6}\/)?editor.*$/
 // @exclude      https://www.waze.com/user/*editor/*
@@ -20,13 +20,14 @@ Migrated to WME SDK by kid4rm90s
 // @downloadURL https://update.greasyfork.org/scripts/491466/Waze%20Parallel%20Segments.user.js
 // @updateURL https://update.greasyfork.org/scripts/491466/Waze%20Parallel%20Segments.meta.js
 // ==/UserScript==
-
+/**To Do */
+// Select segment at one side and another same segment at the other side and it will select all the segments in between.
 (function () {
     'use strict';
 
     // ─── Script metadata ────────────────────────────────────────────────────────
     const updateMessage = `<strong>Whats new?</strong>.<br>` +
-        `Proper lanes count detection and split segments.<br><br>` +
+        `Added "Make it parallel" feature: select one-way segments, draw a guide line between them without crossing, and they become parallel at the specified distance.<br><br>` +
         `<em>Enjoy Mapping!</em>`;
     const scriptName = GM_info.script.name;
     const scriptVersion = GM_info.script.version;
@@ -41,9 +42,13 @@ Migrated to WME SDK by kid4rm90s
 
     const language = {
         btnSplit: "Split the segments",
+        btnMakeParallel: "Make it parallel",
         strMeters: "m",
         strDistance: "Distance between the two parallel segments:",
-        strSelMoreSeg: "Since you have more than 1 segment selected, to use this function make sure that you have selected segments sequentially (from one end to the other) and after executing the script, VERIFY the result obtained."
+        strSelMoreSeg: "Since you have more than 1 segment selected, to use this function make sure that you have selected segments sequentially (from one end to the other) and after executing the script, VERIFY the result obtained.",
+        strMakeParallelConfirm: "You are about to make {count} segments parallel. Continue?",
+        strMakeParallelGuide: "Draw a guide line on the map — the selected segments will become parallel to it.",
+        strMakeParallelSuccess: "Successfully made {count} segment{plural} parallel with {distance}m gap!"
     };
 
     // ─── State tracking across multi-segment splits ──────────────────────────
@@ -194,38 +199,38 @@ Migrated to WME SDK by kid4rm90s
         }
     }
 
-    // ─── insertButtons: inject split segment UI ───────────────────────────────
+    // ─── insertButtons: inject split segment and make-parallel UI ────────────
     function insertButtons() {
 
         const selection = sdk.Editing.getSelection();
         if (!selection || selection.objectType !== 'segment' || selection.ids.length === 0) return;
 
-        // Check exit conditions across all selected segments
-        let exit = false;
+        // ── Check 1: split-segment conditions (all two-way, symmetrical lanes) ──
+        let canSplit = true;
         for (const segId of selection.ids) {
             const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
             if (!seg) continue;
-            // fwdLanes / revLanes → fromLanesInfo / toLanesInfo numberOfLanes (SDK SegmentLanesInfo)
             const fwdLanes = seg.fromLanesInfo?.numberOfLanes ?? 0;
             const revLanes = seg.toLanesInfo?.numberOfLanes ?? 0;
-            // Only show the button if lane counts match (both 0 = no lanes, both N = symmetrical)
-            if (fwdLanes !== revLanes) { exit = true; break; }
-            // Must be strictly two-way — use SDK Segment.isTwoWay property
-            if (!seg.isTwoWay) { exit = true; break; }
-            if (pedestrianRoadIds.includes(seg.roadType)) { exit = true; break; }
+            if (fwdLanes !== revLanes) { canSplit = false; }
+            if (!seg.isTwoWay) { canSplit = false; }
+            if (pedestrianRoadIds.includes(seg.roadType)) { canSplit = false; }
         }
 
-        if (exit) return;
-        if (document.getElementById('split-segment') !== null) return;
+        // ── Check 2: make-parallel conditions (all one-way, ≥2 segments) ────
+        let canMakeParallel = selection.ids.length >= 2;
+        for (const segId of selection.ids) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) continue;
+            if (seg.isTwoWay) { canMakeParallel = false; break; }
+            if (pedestrianRoadIds.includes(seg.roadType)) { canMakeParallel = false; break; }
+        }
 
+        if (!canSplit && !canMakeParallel) return;
+
+        // ── Create shared container (once) ──────────────────────────────────
+        if (document.getElementById('split-segment') === null) {
         const strMeters = language.strMeters;
-
-        const btn1 = document.createElement('wz-button');
-        btn1.setAttribute('color', 'secondary');
-        btn1.setAttribute('size', 'sm');
-        btn1.style.cssText = 'float:right;margin-top: 5px;';
-        btn1.textContent = language.btnSplit;
-        btn1.addEventListener('click', mainSplitSegments);
 
         const selSegmentsDistance = document.createElement('wz-select');
         selSegmentsDistance.id = 'segmentsDistance';
@@ -244,10 +249,29 @@ Migrated to WME SDK by kid4rm90s
         const label = document.createElement('wz-label');
         label.textContent = language.strDistance;
 
+            // Split button
+            const btnSplit = document.createElement('wz-button');
+            btnSplit.setAttribute('color', 'secondary');
+            btnSplit.setAttribute('size', 'sm');
+            btnSplit.id = 'btnSplitSegments';
+            btnSplit.style.cssText = 'float:right;margin-top: 5px;';
+            btnSplit.textContent = language.btnSplit;
+            btnSplit.addEventListener('click', mainSplitSegments);
+
+            // Make-parallel button
+            const btnParallel = document.createElement('wz-button');
+            btnParallel.setAttribute('color', 'secondary');
+            btnParallel.setAttribute('size', 'sm');
+            btnParallel.id = 'btnMakeParallel';
+            btnParallel.style.cssText = 'float:right;margin-top: 5px;margin-left: 4px;';
+            btnParallel.textContent = language.btnMakeParallel;
+            btnParallel.addEventListener('click', onMakeParallelClick);
+
         const divGroup1 = document.createElement('div');
         divGroup1.appendChild(label);
         divGroup1.appendChild(selSegmentsDistance);
-        divGroup1.appendChild(btn1);
+            divGroup1.appendChild(btnSplit);
+            divGroup1.appendChild(btnParallel);
 
         const cnt = document.createElement('div');
         cnt.id = 'split-segment';
@@ -265,6 +289,13 @@ Migrated to WME SDK by kid4rm90s
         selSegmentsDistance.addEventListener('change', function () {
             localStorage.setItem('metersSplitSegment', selSegmentsDistance.value);
         });
+        }
+
+        // ── Toggle button visibility ────────────────────────────────────────
+        const splitBtn = document.getElementById('btnSplitSegments');
+        const parallelBtn = document.getElementById('btnMakeParallel');
+        if (splitBtn) splitBtn.style.display = canSplit ? '' : 'none';
+        if (parallelBtn) parallelBtn.style.display = canMakeParallel ? '' : 'none';
     }
 
     // ─── orderSegments: sort selected segment IDs from one end to the other ───
@@ -566,6 +597,628 @@ Migrated to WME SDK by kid4rm90s
         );
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //  "Make it parallel" feature
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ─── onMakeParallelClick: entry point — draw a guide line ─────────────
+    function onMakeParallelClick() {
+        const selection = sdk.Editing.getSelection();
+        if (!selection || selection.objectType !== 'segment' || selection.ids.length < 2) return;
+
+        const segmentIds = [...selection.ids];
+        const distance = parseFloat(document.getElementById('segmentsDistance').value);
+
+        // Show brief guidance toastr before drawing
+        WazeToastr.Alerts.info(scriptName, language.strMakeParallelGuide, false, false, 3000);
+
+        sdk.Map.drawLine()
+            .then((line) => {
+                onDrawLineFinished(line, segmentIds, distance);
+            })
+            .catch((ex) => {
+                if (ex instanceof sdk.Errors.InvalidStateError) {
+                    // User cancelled drawing — ignore silently
+                    console.log(`${scriptName} Make parallel drawing cancelled`);
+                } else {
+                    console.error(`${scriptName} Make parallel error:`, ex);
+                }
+            });
+    }
+
+    // ─── onDrawLineFinished: handle the drawn guide line ──────────────────
+    function onDrawLineFinished(line, segmentIds, distance) {
+        if (segmentIds.length > 2) {
+            WazeToastr.Alerts.confirm(
+                scriptName,
+                language.strMakeParallelConfirm.replace('{count}', segmentIds.length),
+                function () { applyMakeParallel(line, segmentIds, distance); },
+                function () { return; },
+                "Continue",
+                "Cancel"
+            );
+            return;
+        }
+        applyMakeParallel(line, segmentIds, distance);
+    }
+
+    // ─── applyMakeParallel: core logic — offset segments to be parallel ───
+    // Strategy: compute segment geometries first (by slicing the offset guide
+    // line), then derive node positions from the slice endpoints. This ensures
+    // node and geometry are always in sync, preventing kinking on curves while
+    // fully reshaping segments to follow the guide line's curvature.
+    //   1. Validate the drawn guide line is longer than the segment span
+    //   2. Determine which geometric side each segment is on
+    //   3. Detect independent chains. If exactly 2 chains, assign opposite
+    //      sides (one left, one right) so they spread outward from the guide
+    //      line as a parallel pair.
+    //   4. Make each chain internally consistent (force mixed-side segments
+    //      within a chain to the chain's majority side). This prevents
+    //      cross-side nodes inside a chain from collapsing both chains.
+    //   5. Detect cross-side shared nodes. If any exist, force all segments
+    //      to the majority side to prevent V-shaped kinks.
+    //   6. Group by side, slice guide line → offset → per-segment slices,
+    //      record node positions from slice endpoints. Set cross-side shared
+    //      node positions on guide line, snap their segments
+    //   7. Move all nodes
+    //   8. Update all segment geometries
+    //   9. Re-allow turns at all modified nodes
+    function applyMakeParallel(line, segmentIds, distance) {
+        console.log(`========== ${scriptName} applyMakeParallel START ==========`);
+        console.log(`${scriptName} Params: segmentIds=${JSON.stringify(segmentIds)}, distance=${distance}, halfD=${distance / 2}`);
+        console.log(`${scriptName} Guide line coords count:`, line.coordinates.length);
+        console.log(`${scriptName} Guide line first coord:`, JSON.stringify(line.coordinates[0]));
+        console.log(`${scriptName} Guide line last coord:`, JSON.stringify(line.coordinates[line.coordinates.length - 1]));
+
+        // ── BEFORE snapshot: log original geometry of every selected segment ──
+        console.log(`${scriptName} BEFORE snapshot — original segment geometries:`);
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (seg) {
+                console.log(`${scriptName}   seg ${segId}: fromNode=${seg.fromNodeId}, toNode=${seg.toNodeId}, coords=${JSON.stringify(seg.geometry.coordinates)}`);
+            } else {
+                console.log(`${scriptName}   seg ${segId}: NOT FOUND in model`);
+            }
+        }
+        // ── Node connectivity map ──────────────────────────────────────────
+        console.log(`${scriptName} Node connectivity (which segments connect at each node):`);
+        const connMap = {};
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) continue;
+            for (const nodeId of [seg.fromNodeId, seg.toNodeId]) {
+                if (nodeId === null) continue;
+                if (!connMap[nodeId]) connMap[nodeId] = [];
+                connMap[nodeId].push(segId);
+            }
+        }
+        for (const [nodeId, segs] of Object.entries(connMap)) {
+            const suffix = segs.length > 1 ? ' ← SHARED' : '';
+            console.log(`${scriptName}   node ${nodeId}: connected segs=${JSON.stringify(segs)}${suffix}`);
+        }
+
+        const halfD = distance / 2;
+        const lineCoords = line.coordinates;
+
+        // Simplify the drawn line to reduce vertex count
+        const simplified = turf.simplify(turf.lineString(lineCoords), { tolerance: 0.000001, highQuality: true });
+        const guideCoords = simplified.geometry.coordinates;
+
+        console.log(`${scriptName} After simplify: coords count=${guideCoords.length}`);
+        console.log(`${scriptName} Guide coords (simplified):`, JSON.stringify(guideCoords));
+
+        if (guideCoords.length < 2) {
+            console.error(`${scriptName} guide line has too few coordinates`);
+            return;
+        }
+
+        const guideLine = turf.lineString(guideCoords);
+        const guideLengthM = turf.length(guideLine, { units: 'meters' });
+        console.log(`${scriptName} Guide line length: ${guideLengthM.toFixed(2)}m`);
+
+        // ── Validate: guide line must be longer than the selected segments ──
+        // Project each segment's first and last coordinate onto the guide line
+        // and verify they fall within the guide line's interior (not at its tips).
+        const marginMeters = 5; // require at least 5m clearance past the furthest projection
+        let minDistM = Infinity;
+        let maxDistM = -Infinity;
+
+        console.log(`${scriptName} Validation: projecting segment endpoints onto guide line...`);
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) continue;
+            const coords = seg.geometry.coordinates;
+            for (const coord of [coords[0], coords[coords.length - 1]]) {
+                const nearest = turf.nearestPointOnLine(guideLine, turf.point(coord));
+                const slice = turf.lineSlice(
+                    turf.point(guideCoords[0]),
+                    turf.point(nearest.geometry.coordinates),
+                    guideLine
+                );
+                const d = turf.length(slice, { units: 'meters' });
+                console.log(`${scriptName}   seg ${segId} endpoint [${coord[0].toFixed(6)},${coord[1].toFixed(6)}] → projected [${nearest.geometry.coordinates[0].toFixed(6)},${nearest.geometry.coordinates[1].toFixed(6)}] (index=${nearest.properties.index}) → ${d.toFixed(2)}m from guide start`);
+                if (d < minDistM) minDistM = d;
+                if (d > maxDistM) maxDistM = d;
+            }
+        }
+        console.log(`${scriptName} Validation: minDistM=${minDistM === Infinity ? 'N/A' : minDistM.toFixed(2)}m, maxDistM=${maxDistM === -Infinity ? 'N/A' : maxDistM.toFixed(2)}m, guideLengthM=${guideLengthM.toFixed(2)}m`);
+
+        if (minDistM !== Infinity) {
+            if (minDistM < marginMeters) {
+                console.log(`${scriptName} VALIDATION FAILED: earliest projection ${minDistM.toFixed(1)}m < ${marginMeters}m margin`);
+                WazeToastr.Alerts.error(scriptName,
+                    `Guide line is too short. The drawn line must extend past both ends of the selected segments. Please draw a longer guide line (minimum ${marginMeters}m clearance at each end).`);
+                return;
+            }
+            if (guideLengthM - maxDistM < marginMeters) {
+                console.log(`${scriptName} VALIDATION FAILED: furthest projection ${(guideLengthM - maxDistM).toFixed(1)}m from end < ${marginMeters}m margin`);
+                WazeToastr.Alerts.error(scriptName,
+                    `Guide line is too short. The drawn line must extend past both ends of the selected segments. Please draw a longer guide line (minimum ${marginMeters}m clearance at each end).`);
+                return;
+            }
+        }
+        console.log(`${scriptName} Validation PASSED`);
+
+        // Detect traffic side for log context
+        detectTrafficSide(segmentIds[0]);
+
+        // ── Step 1: Determine which geometric side each segment is on ──────
+        console.log(`${scriptName} Step 1: determining segment sides...`);
+        const segmentSides = {};
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (seg) {
+                // Compute midpoint for logging
+                const coords = seg.geometry.coordinates;
+                let sumLon = 0, sumLat = 0;
+                for (const c of coords) { sumLon += c[0]; sumLat += c[1]; }
+                const midLon = sumLon / coords.length;
+                const midLat = sumLat / coords.length;
+                const midPt = [midLon, midLat];
+
+                // Debug: compute and log the cross product details
+                const guideLineDbg = turf.lineString(guideCoords);
+                const nearestDbg = turf.nearestPointOnLine(guideLineDbg, turf.point(midPt));
+                const nIdx = nearestDbg.properties.index;
+                const nCoord = nearestDbg.geometry.coordinates;
+                const p1Dbg = guideCoords[nIdx];
+                const p2Dbg = guideCoords[Math.min(nIdx + 1, guideCoords.length - 1)];
+                const guideBear = turf.bearing(turf.point(p1Dbg), turf.point(p2Dbg));
+                const toSegBear = turf.bearing(
+                    turf.point(nCoord),
+                    turf.point(midPt)
+                );
+                const gRad = guideBear * Math.PI / 180;
+                const sRad = toSegBear * Math.PI / 180;
+                const dxDbg = Math.sin(gRad);
+                const dyDbg = Math.cos(gRad);
+                const sxDbg = Math.sin(sRad);
+                const syDbg = Math.cos(sRad);
+                const crossDbg = dxDbg * syDbg - dyDbg * sxDbg;
+
+                segmentSides[segId] = crossDbg > 0 ? 'left' : 'right';
+                console.log(`${scriptName}   seg ${segId}: midpoint=[${midLon.toFixed(6)},${midLat.toFixed(6)}], nearest_guide=[${nCoord[0].toFixed(6)},${nCoord[1].toFixed(6)}] (idx=${nIdx}), guideBearing=${guideBear.toFixed(2)}°, toSegmentBearing=${toSegBear.toFixed(2)}°, cross=${crossDbg.toFixed(6)}, side=${segmentSides[segId]}`);
+            }
+        }
+
+        // ── Step 2: Detect independent chains, assign opposite sides ──────
+        // When there are exactly 2 independent chains (segments that don't share
+        // nodes), force one to the left side and the other to the right side.
+        // This creates a parallel pair offset outward from the guide line — each
+        // chain spreads away from the center instead of both crowding one side.
+        console.log(`${scriptName} Step 2: detecting independent chains...`);
+        const segConnections = {};
+        for (const segId of segmentIds) segConnections[segId] = new Set();
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) continue;
+            for (const nodeId of [seg.fromNodeId, seg.toNodeId]) {
+                if (nodeId === null) continue;
+                for (const otherSegId of segmentIds) {
+                    if (otherSegId === segId) continue;
+                    const otherSeg = sdk.DataModel.Segments.getById({ segmentId: otherSegId });
+                    if (!otherSeg) continue;
+                    if (otherSeg.fromNodeId === nodeId || otherSeg.toNodeId === nodeId) {
+                        segConnections[segId].add(otherSegId);
+                    }
+                }
+            }
+        }
+        const visited = new Set();
+        const chains = [];
+        for (const segId of segmentIds) {
+            if (visited.has(segId)) continue;
+            const chain = [segId];
+            visited.add(segId);
+            const queue = [segId];
+            while (queue.length > 0) {
+                const cur = queue.shift();
+                for (const n of segConnections[cur]) {
+                    if (!visited.has(n)) { visited.add(n); queue.push(n); chain.push(n); }
+                }
+            }
+            chains.push(chain);
+        }
+        console.log(`${scriptName}   Found ${chains.length} independent chain(s)`);
+        for (let ci = 0; ci < chains.length; ci++) {
+            const sides = chains[ci].map(sid => segmentSides[sid]);
+            console.log(`${scriptName}     Chain ${ci}: ${chains[ci].length} seg(s), sides: ${sides.join(', ')}`);
+        }
+        // If exactly 2 chains on the same side, spread outward by assigning
+        // opposite sides. The chain FURTHER from the guide line (larger perp
+        // distance) stays on its detected side; the CLOSER chain flips. This
+        // ensures the physically outermost chain stays outward on its natural
+        // side, matching the user's spatial expectation.
+        if (chains.length === 2) {
+            const c0Side = segmentSides[chains[0][0]];
+            const c1Side = segmentSides[chains[1][0]];
+            if (c0Side === c1Side) {
+                // Compute average center and perpendicular distance for each chain
+                const chainDist = [0, 0];
+                for (let ci = 0; ci < 2; ci++) {
+                    let sumLon = 0, sumLat = 0, count = 0;
+                    for (const segId of chains[ci]) {
+                        const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+                        if (!seg) continue;
+                        const coords = seg.geometry.coordinates;
+                        for (const c of coords) { sumLon += c[0]; sumLat += c[1]; count++; }
+                    }
+                    if (count === 0) continue;
+                    const center = [sumLon / count, sumLat / count];
+                    const nearest = turf.nearestPointOnLine(guideLine, turf.point(center));
+                    chainDist[ci] = turf.distance(turf.point(center), turf.point(nearest.geometry.coordinates), { units: 'meters' });
+                    console.log(`${scriptName}     Chain ${ci} center distance from guide: ${chainDist[ci].toFixed(2)}m`);
+                }
+                // Flip the closer chain; keep the further chain on its detected side
+                const flipIdx = chainDist[0] < chainDist[1] ? 0 : 1;
+                const keepIdx = 1 - flipIdx;
+                const flipTo = c0Side === 'left' ? 'right' : 'left';
+                console.log(`${scriptName}   Both chains on "${c0Side}" — keeping chain ${keepIdx} (${chainDist[keepIdx].toFixed(2)}m), flipping chain ${flipIdx} (${chainDist[flipIdx].toFixed(2)}m) to "${flipTo}"`);
+                for (const segId of chains[flipIdx]) segmentSides[segId] = flipTo;
+            }
+        }
+
+        // ── Step 3: Make each chain internally consistent ─────────────────
+        // Within a chain, segments may detect on different sides, creating
+        // cross-side shared nodes inside the chain. This triggers a global
+        // majority vote that collapses BOTH chains to one side. Fix by
+        // forcing each chain to its own majority side first.
+        console.log(`${scriptName} Step 3: making chains internally consistent...`);
+        for (let ci = 0; ci < chains.length; ci++) {
+            const sideCounts = { left: 0, right: 0 };
+            for (const segId of chains[ci]) {
+                const side = segmentSides[segId];
+                if (side) sideCounts[side]++;
+            }
+            if (sideCounts.left > 0 && sideCounts.right > 0) {
+                const majoritySide = sideCounts.left >= sideCounts.right ? 'left' : 'right';
+                console.log(`${scriptName}     Chain ${ci}: mixed (L:${sideCounts.left}, R:${sideCounts.right}) → forcing to "${majoritySide}"`);
+                for (const segId of chains[ci]) segmentSides[segId] = majoritySide;
+            } else {
+                console.log(`${scriptName}     Chain ${ci}: consistent (${sideCounts.left > 0 ? 'left' : 'right'})`);
+            }
+        }
+
+        // ── Step 4: Detect cross-side shared nodes ─────────────────────────
+        console.log(`${scriptName} Step 4: detecting cross-side shared nodes...`);
+        const nodeSides = {};
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) continue;
+            const side = segmentSides[segId];
+            for (const nodeId of [seg.fromNodeId, seg.toNodeId]) {
+                if (nodeId === null) continue;
+                if (!nodeSides[nodeId]) nodeSides[nodeId] = new Set();
+                nodeSides[nodeId].add(side);
+            }
+        }
+        const neutralNodeIds = new Set();
+        let hasCrossSideNodes = false;
+        for (const [nodeId, sides] of Object.entries(nodeSides)) {
+            if (sides.size > 1) {
+                neutralNodeIds.add(parseInt(nodeId));
+                hasCrossSideNodes = true;
+                console.log(`${scriptName}   node ${nodeId}: connected to BOTH left and right — will stay on guide line`);
+            }
+        }
+
+        // ── Step 5: If cross-side nodes exist, force all to majority side ──
+        if (hasCrossSideNodes) {
+            const sideCounts = { left: 0, right: 0 };
+            for (const side of Object.values(segmentSides)) {
+                sideCounts[side]++;
+            }
+            const majoritySide = sideCounts.left >= sideCounts.right ? 'left' : 'right';
+            console.log(`${scriptName}   Cross-side nodes found — forcing all ${segmentIds.length} segments to "${majoritySide}"`);
+            for (const segId of segmentIds) {
+                segmentSides[segId] = majoritySide;
+            }
+            neutralNodeIds.clear();
+        }
+
+        // ── Step 6: Compute node positions & segment geometries together ──
+        // Strategy: create the offset guide line, slice portions for each segment,
+        // then derive node positions from the slice endpoints. This ensures node
+        // positions and segment endpoints are perfectly in sync — no force-snapping,
+        // no kinking. Cross-side shared nodes are the exception (placed on guide line).
+        console.log(`${scriptName} Step 6: grouping segments by side and computing offset slices...`);
+
+        const nodeNewPositions = {}; // nodeId → [lon, lat]
+        const segmentNewGeometries = {}; // segId → [[lon,lat], ...]
+
+        // Group segments by side with projection info
+        const sideGroups = {}; // side → [{segId, fromNodeId, toNodeId, projStart, projEnd, startLoc, endLoc}]
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (!seg) continue;
+            const side = segmentSides[segId];
+            const firstCoord = seg.geometry.coordinates[0];
+            const lastCoord = seg.geometry.coordinates[seg.geometry.coordinates.length - 1];
+            const projStart = turf.nearestPointOnLine(guideLine, turf.point(firstCoord));
+            const projEnd = turf.nearestPointOnLine(guideLine, turf.point(lastCoord));
+
+            if (!sideGroups[side]) sideGroups[side] = [];
+            sideGroups[side].push({
+                segId,
+                fromNodeId: seg.fromNodeId,
+                toNodeId: seg.toNodeId,
+                projStartCoord: projStart.geometry.coordinates,
+                projEndCoord: projEnd.geometry.coordinates,
+                startLoc: projStart.properties.location,
+                endLoc: projEnd.properties.location
+            });
+        }
+
+        // Process each side group independently
+        for (const [side, segs] of Object.entries(sideGroups)) {
+            console.log(`${scriptName}   Processing ${side} side: ${segs.length} segments`);
+
+            // Sort by projection start location along the guide line
+            segs.sort((a, b) => Math.min(a.startLoc, a.endLoc) - Math.min(b.startLoc, b.endLoc));
+
+            // Find the true extremes (handling reversed projections)
+            let trueMinCoord = null, trueMinLoc = Infinity;
+            let trueMaxCoord = null, trueMaxLoc = -Infinity;
+            for (const s of segs) {
+                const sLoc = Math.min(s.startLoc, s.endLoc);
+                const eLoc = Math.max(s.startLoc, s.endLoc);
+                const sCoord = s.startLoc <= s.endLoc ? s.projStartCoord : s.projEndCoord;
+                const eCoord = s.endLoc >= s.startLoc ? s.projEndCoord : s.projStartCoord;
+                if (sLoc < trueMinLoc) { trueMinLoc = sLoc; trueMinCoord = sCoord; }
+                if (eLoc > trueMaxLoc) { trueMaxLoc = eLoc; trueMaxCoord = eCoord; }
+            }
+
+            // Slice the guide line from min to max and offset it
+            const sliceGuideStart = turf.point(trueMinCoord);
+            const sliceGuideEnd = turf.point(trueMaxCoord);
+            const totalGuideLine = turf.lineString(guideCoords);
+
+            let fullSlice;
+            if (trueMinLoc <= trueMaxLoc) {
+                fullSlice = turf.lineSlice(sliceGuideStart, sliceGuideEnd, totalGuideLine);
+            } else {
+                fullSlice = turf.lineSlice(sliceGuideEnd, sliceGuideStart, totalGuideLine);
+            }
+            let sliceCoords = fullSlice.geometry.coordinates;
+            if (sliceCoords.length < 2) {
+                sliceCoords = [trueMinCoord, trueMaxCoord];
+            }
+
+            // Subdivide short slices to ensure enough offset vertices for curve
+            // fidelity — when both endpoints fall on the same guide segment, the
+            // slice has only 2 coords and the offset line becomes a straight line.
+            if (sliceCoords.length < 8) {
+                const guideSliceLine = turf.lineString(sliceCoords);
+                const sliceLenKm = turf.length(guideSliceLine, { units: 'kilometers' });
+                const targetPoints = 8;
+                const subdivided = [];
+                for (let i = 0; i <= targetPoints; i++) {
+                    const pt = turf.along(guideSliceLine, (i / targetPoints) * sliceLenKm, { units: 'kilometers' });
+                    subdivided.push(pt.geometry.coordinates);
+                }
+                sliceCoords = subdivided;
+            }
+
+            console.log(`${scriptName}     ${side} side: slice has ${sliceCoords.length} coords (after subdivision)`);
+
+            // Offset the slice
+            const fullOffsetCoords = offsetGuideLine(sliceCoords, halfD, side);
+            const offsetLine = turf.lineString(fullOffsetCoords);
+            const offsetLengthM = turf.length(offsetLine, { units: 'meters' });
+            const totalSpanDeg = trueMaxLoc - trueMinLoc;
+            console.log(`${scriptName}     ${side} side: offset has ${fullOffsetCoords.length} coords, length=${offsetLengthM.toFixed(2)}m`);
+
+            // Slice each segment's portion and record positions
+            for (const s of segs) {
+                const segStartLoc = Math.min(s.startLoc, s.endLoc);
+                const segEndLoc = Math.max(s.startLoc, s.endLoc);
+                const fracStart = totalSpanDeg > 0 ? (segStartLoc - trueMinLoc) / totalSpanDeg : 0;
+                const fracEnd = totalSpanDeg > 0 ? (segEndLoc - trueMinLoc) / totalSpanDeg : 1;
+
+                const distStart = Math.max(0, fracStart * offsetLengthM);
+                const distEnd = Math.min(offsetLengthM, fracEnd * offsetLengthM);
+                const ptStartOnOffset = turf.along(offsetLine, distStart, { units: 'meters' });
+                const ptEndOnOffset = turf.along(offsetLine, distEnd, { units: 'meters' });
+
+                let segSlice = turf.lineSlice(ptStartOnOffset, ptEndOnOffset, offsetLine);
+                let segCoords = segSlice.geometry.coordinates;
+
+                // Reverse if the segment's original orientation was reversed
+                if (s.startLoc > s.endLoc) {
+                    segCoords.reverse();
+                }
+
+                if (segCoords.length < 2) {
+                    segCoords = [ptStartOnOffset.geometry.coordinates, ptEndOnOffset.geometry.coordinates];
+                }
+
+                // Record node positions from slice endpoints (unless cross-side shared)
+                if (!neutralNodeIds.has(s.fromNodeId) && !nodeNewPositions[s.fromNodeId]) {
+                    nodeNewPositions[s.fromNodeId] = segCoords[0];
+                }
+                if (!neutralNodeIds.has(s.toNodeId) && !nodeNewPositions[s.toNodeId]) {
+                    nodeNewPositions[s.toNodeId] = segCoords[segCoords.length - 1];
+                }
+
+                segmentNewGeometries[s.segId] = segCoords;
+                console.log(`${scriptName}     seg ${s.segId} (${side}): frac=[${fracStart.toFixed(4)},${fracEnd.toFixed(4)}], offset slice has ${segCoords.length} coords`);
+            }
+        }
+
+        // ── Step 7: Set cross-side shared node positions (on guide line) ──
+        console.log(`${scriptName} Step 7: setting ${neutralNodeIds.size} cross-side shared node(s) on guide line...`);
+        for (const nodeId of neutralNodeIds) {
+            const node = sdk.DataModel.Nodes.getById({ nodeId });
+            if (!node) continue;
+            const nearest = turf.nearestPointOnLine(guideLine, turf.point(node.geometry.coordinates));
+            nodeNewPositions[nodeId] = nearest.geometry.coordinates;
+            console.log(`${scriptName}   neutral node ${nodeId} → guide line [${nearest.geometry.coordinates[0].toFixed(6)},${nearest.geometry.coordinates[1].toFixed(6)}]`);
+
+            // For cross-side shared nodes, snap connected segment endpoints to this position
+            for (const segId of segmentIds) {
+                const segCoords = segmentNewGeometries[segId];
+                if (!segCoords) continue;
+                const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+                if (!seg) continue;
+                if (seg.fromNodeId === nodeId) {
+                    segCoords[0] = nodeNewPositions[nodeId];
+                }
+                if (seg.toNodeId === nodeId) {
+                    segCoords[segCoords.length - 1] = nodeNewPositions[nodeId];
+                }
+            }
+        }
+        console.log(`${scriptName} Step 7: ${Object.keys(nodeNewPositions).length} unique node positions computed`);
+
+        // ── Step 8: Move all nodes ─────────────────────────────────────────
+        console.log(`${scriptName} Step 8: moving ${Object.keys(nodeNewPositions).length} unique nodes...`);
+        for (const [nodeIdStr, newPos] of Object.entries(nodeNewPositions)) {
+            console.log(`${scriptName}   moveNode id=${nodeIdStr} → [${newPos[0].toFixed(6)},${newPos[1].toFixed(6)}]`);
+            sdk.DataModel.Nodes.moveNode({
+                id: parseInt(nodeIdStr),
+                geometry: { type: 'Point', coordinates: newPos }
+            });
+        }
+
+        // ── Step 9: Update segment geometries ──────────────────────────────
+        console.log(`${scriptName} Step 9: updating ${Object.keys(segmentNewGeometries).length} segment geometries (offset-sliced, follows guide line shape)...`);
+        for (const [segId, coords] of Object.entries(segmentNewGeometries)) {
+            if (coords.length >= 2) {
+                sdk.DataModel.Segments.updateSegment({
+                    segmentId: parseInt(segId),
+                    geometry: { type: 'LineString', coordinates: coords }
+                });
+            }
+        }
+
+        // ── Step 10: Allow turns at all modified nodes ─────────────────────
+        console.log(`${scriptName} Step 10: allowing turns at ${Object.keys(nodeNewPositions).length} nodes...`);
+        for (const nodeIdStr of Object.keys(nodeNewPositions)) {
+            console.log(`${scriptName}   allowNodeTurns node ${nodeIdStr}`);
+            sdk.DataModel.Nodes.allowNodeTurns({ nodeId: parseInt(nodeIdStr), allow: true });
+        }
+
+        console.log(`========== ${scriptName} applyMakeParallel END ==========`);
+
+        // ── AFTER snapshot: log final geometry of every selected segment ──
+        console.log(`${scriptName} AFTER snapshot — final segment geometries:`);
+        for (const segId of segmentIds) {
+            const seg = sdk.DataModel.Segments.getById({ segmentId: segId });
+            if (seg) {
+                console.log(`${scriptName}   seg ${segId}: fromNode=${seg.fromNodeId}, toNode=${seg.toNodeId}, coords=${JSON.stringify(seg.geometry.coordinates)}`);
+            } else {
+                console.log(`${scriptName}   seg ${segId}: NOT FOUND in model after update`);
+            }
+        }
+
+        const msg = language.strMakeParallelSuccess
+            .replace('{count}', segmentIds.length)
+            .replace('{plural}', segmentIds.length > 1 ? 's' : '')
+            .replace('{distance}', distance);
+        WazeToastr.Alerts.success(scriptName, msg);
+    }
+
+    // ─── determineSideOfLine: which geometric side of a guide line a segment is on ──
+    function determineSideOfLine(segmentCoords, guideCoords) {
+        // Compute the midpoint of the segment geometry
+        let sumLon = 0;
+        let sumLat = 0;
+        for (const coord of segmentCoords) {
+            sumLon += coord[0];
+            sumLat += coord[1];
+        }
+        const midLon = sumLon / segmentCoords.length;
+        const midLat = sumLat / segmentCoords.length;
+
+        // Build a turf line from the guide coords
+        const guideLine = turf.lineString(guideCoords);
+        const nearest = turf.nearestPointOnLine(guideLine, turf.point([midLon, midLat]));
+
+        const nearestLon = nearest.geometry.coordinates[0];
+        const nearestLat = nearest.geometry.coordinates[1];
+
+        // The segment (index) of the guide line containing the nearest point
+        const idx = nearest.properties.index;
+        const p1 = guideCoords[idx];
+        const p2 = guideCoords[Math.min(idx + 1, guideCoords.length - 1)];
+
+        // Bearing of the guide line at the nearest point
+        const bearing = turf.bearing(turf.point(p1), turf.point(p2));
+
+        // Bearing from the nearest point to the segment midpoint
+        const toSegment = turf.bearing(
+            turf.point([nearestLon, nearestLat]),
+            turf.point([midLon, midLat])
+        );
+
+        // Cross product (z-component) between guide direction and segment direction.
+        // IMPORTANT: turf.bearing uses 0° = North, but Math.cos/sin use 0° = East.
+        // Swap sin/cos to convert from bearing convention to vector components.
+        const bearingRad = bearing * Math.PI / 180;
+        const toSegmentRad = toSegment * Math.PI / 180;
+        const dx = Math.sin(bearingRad);   // sin, not cos — bearing 0°=North → x=0
+        const dy = Math.cos(bearingRad);   // cos, not sin — bearing 0°=North → y=1
+        const sx = Math.sin(toSegmentRad);
+        const sy = Math.cos(toSegmentRad);
+        const cross = dx * sy - dy * sx;
+
+        return cross > 0 ? 'left' : 'right';
+    }
+
+    // ─── offsetGuideLine: offset a line's coordinates perpendicularly ──────
+    // Offsets each point of the guide line by halfD in the given geometric
+    // side direction (left or right). Uses turf.destination for WGS84 math.
+    function offsetGuideLine(guideCoords, halfD, side) {
+        const result = [];
+        const halfDKm = halfD / 1000;
+
+        for (let i = 0; i < guideCoords.length; i++) {
+            let bearing;
+            if (i === 0) {
+                // First point: use direction to next point
+                bearing = turf.bearing(turf.point(guideCoords[i]), turf.point(guideCoords[i + 1]));
+            } else if (i === guideCoords.length - 1) {
+                // Last point: use direction from previous point
+                bearing = turf.bearing(turf.point(guideCoords[i - 1]), turf.point(guideCoords[i]));
+            } else {
+                // Middle point: average of incoming and outgoing bearings
+                const bearingIn = turf.bearing(turf.point(guideCoords[i - 1]), turf.point(guideCoords[i]));
+                const bearingOut = turf.bearing(turf.point(guideCoords[i]), turf.point(guideCoords[i + 1]));
+                bearing = (bearingIn + bearingOut) / 2;
+            }
+
+            // Perpendicular offset — purely geometric, not traffic-side dependent
+            const offsetBearing = side === 'left'
+                ? (bearing - 90 + 360) % 360
+                : (bearing + 90) % 360;
+
+            const dest = turf.destination(turf.point(guideCoords[i]), halfDKm, offsetBearing, { units: 'kilometers' });
+            result.push(dest.geometry.coordinates);
+        }
+
+        return result;
+    }
+
     // ─── createSegments: split one segment and compute offset geometries ──────
     // 
     // NOTE: OpenLayers geometry operations (rotate, resize, clone on OL.Geometry.Point)
@@ -812,7 +1465,6 @@ Migrated to WME SDK by kid4rm90s
         return null;
     }
 
-    // ─── Script update monitor ────────────────────────────────────────────────
     function scriptupdatemonitor() {
         if (WazeToastr?.Ready) {
             const updateMonitor = new WazeToastr.Alerts.ScriptUpdateMonitor(scriptName, scriptVersion, downloadUrl, GM_xmlhttpRequest);
@@ -822,13 +1474,46 @@ Migrated to WME SDK by kid4rm90s
             setTimeout(scriptupdatemonitor, 250);
         }
     }
-
     scriptupdatemonitor();
     bootstrap();
 
 })();
 
 /* Changelog 
+2026.07.27.11 - Removed cross-side node alignment (caused lane crossing). Keep per-side
+                 projection ranges to prevent segment shortening. Independent chains on
+                 opposite sides stay fully separate.
+2026.07.27.10 - Fixed "Make it parallel" segment shortening: use per-side projection ranges
+                 for fraction calculation (prevents clipping). Align paired junction nodes
+                 across side groups in a post-processing step instead.
+2026.07.27.09 - Fixed "Make it parallel" node misalignment: average projection positions of
+                 paired segments across side groups.
+2026.07.27.08 - Fixed "Make it parallel" node misalignment across lanes: use a shared global
+                 projection range for both side groups when 2 chains exist. Nodes at the same
+                 position along the road now get matching fractions on both offset lines.
+2026.07.27.07 - Fixed "Make it parallel" collapse with many segments: make each chain internally
+                 consistent before cross-side detection. Mixed-side segments within a chain
+                 now get forced to the chain's own majority side, preventing cross-side nodes
+                 from triggering a global collapse to one side.
+2026.07.27.06 - Fixed "Make it parallel" chain-side swapping: when 2 chains detect on the same
+                 side, the chain FURTHER from the guide line stays on its detected side; the
+                 CLOSER chain flips. This preserves the physically outermost chain's natural side.
+2026.07.27.05 - Fixed "Make it parallel" overlap on same-side independent chains: detect
+                 independent chains (segments not sharing nodes). When exactly 2 chains
+                 exist, assign opposite sides so they spread outward as a parallel pair.
+2026.07.27.04 - Fixed "Make it parallel" majority-side causing overlap on independent chains:
+                 only force to majority side when cross-side shared nodes exist. Independent
+                 chains on opposite sides (no shared nodes) keep their original sides.
+2026.07.27.03 - Fixed "Make it parallel" cross-side distortion: force all selected segments
+                 to the same side of the guide line (majority vote) when cross-side nodes
+                 exist, preventing V-shaped kinks at shared nodes.
+2026.07.27.02 - Fixed "Make it parallel" shape fidelity: restructured to compute segment
+                 geometries first (offset-line slicing), then derive node positions from
+                 slice endpoints. Follows guide line curvature without kinking.
+2026.07.27.01 - Fixed "Make it parallel" kinking on curves: replaced chain-based offset-line slicing
+                 with per-vertex projection (RA Util pattern).
+2026.07.26.02 - Added "Make it parallel" feature: select two or more one-way segments, click the button, draw a guide line via sdk.Map.drawLine(), and the segments become parallel to the guide line at the specified distance apart. Includes automatic side detection (left/right of guide line), endpoint node movement, and full undo support. Reuses the existing distance dropdown. Cancelling the drawing (Escape) is silently ignored.
+                 Fixed sdk.Editing.doActions not a function error: removed wme-sdk-plus dependency. Each SDK mutation call (updateSegment, moveNode, allowNodeTurns) creates its own undo action — matching the existing split feature pattern.
 2026.06.29.01 - Fixed issue with lane count and able to split segments with equal number of defined lanes on both sides. Added a check to ensure that the segment has equal or zero defined lane on each side before proceeding with the split.
 2026.03.31.01 - Replaced broken segment-address country detection with sdk.Countries.getTopCountry().
                  The SDK Segment interface has no .address property, so seg?.address?.country was
